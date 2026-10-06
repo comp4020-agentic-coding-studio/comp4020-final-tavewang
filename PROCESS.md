@@ -1,105 +1,128 @@
 # Process overview
 
-This is the first version of this file, written for crit 8. It's meant to be
-rewritten, not appended to, as the project moves through crits 9 and 10 — this
-is where things stood after this week's session, not a running log.
+This is the current version of this file, written for crit 8, replacing a
+prior draft from earlier this same week. It's meant to be rewritten, not
+appended to, as the project moves through crits 9 and 10 — this is where
+things stood after this session, not a running log.
+
+## The pivot this file has to be honest about
+
+Earlier this week, this same repo had a working crit 8 submission for a
+different project — Fridge Rescue, a shared-fridge item tracker — built,
+tested, and deployed to this app's `*.fly.dev` URL. I then changed final-
+project direction to MoveOut, a move-out item hand-off tool, for reasons that
+are mine to record here rather than the agent's to invent: **TODO (you)** —
+say briefly why the direction changed. The commit history shows both: the
+Fridge Rescue commits stay in the log unmodified, and the MoveOut commits sit
+on top of them as a real pivot, not a rewrite. The stack question below was
+re-asked rather than assumed to still hold, even though the answer turned out
+to be the same.
 
 ## What I asked for
 
-I gave Claude Code the final project brief and crit 8's spec, plus a specific
-project: **Fridge Rescue**, a shared-fridge tracker for housemates (list what's
-in the fridge, mark things shareable, claim a shared item so two people don't
-take the same half bag of spinach, keep a history once it's used), and a
-detailed functional spec of my own — the member/identity model, the item
-fields, the claim/unclaim/use rules, what's explicitly out of scope this week,
-and what each of `README.md`, `CLAUDE.md`, `PROCESS.md`, and the reflection
-needed to contain. The agent worked from that brief; it chose the stack and
-data model within it, proposed a plan, and I reviewed and approved that plan
-(stack, schema, routes, concurrency approach, order of work) before any code
-was written.
+I gave the agent the final project brief, crit 8's spec, and a detailed
+functional spec of my own for MoveOut: the identity model (a browser cookie,
+not accounts), the item/request fields, the full confirm/cancel/complete
+rules including the two-separate-status-columns requirement, what's
+explicitly out of scope this week, and what each of `README.md`, `CLAUDE.md`,
+`PROCESS.md`, and the reflection needed to contain. The agent worked from
+that brief; it chose the stack and data model within it, proposed a plan
+(schema, routes, concurrency approach, photo-upload approach, order of work),
+and I reviewed and approved that plan before implementation began.
 
 ## Stack decision (ADR)
 
-**Node 24 (built-in `node:sqlite`) + Hono, no bundler, no ORM.**
+**Unchanged from the Fridge Rescue build: Node 24 (built-in `node:sqlite`) +
+Hono, no bundler, no ORM.** The pivot changed the application, not this
+question, so the reasoning is restated rather than re-derived:
 
-Alternatives considered and rejected:
+- `node:sqlite` over `better-sqlite3` — same synchronous API, but built into
+  the Node 24 runtime `mise.toml` already pins, verified directly in this
+  repo with no flag required, so the Docker image needs no compiler
+  toolchain. `fly.toml` fixes one machine and `--ha=false`, so there's exactly
+  one process and one DB file.
+- Hono (`hono` + `@hono/node-server`) for routing, cookies, and
+  auto-escaping HTML — the only "framework" dependency.
+- No client-side framework; server-rendered forms are keyboard-operable and
+  work with JavaScript off.
+- Node 24.21 runs `.ts` files directly (verified again, same as before), so
+  the Dockerfile still has nothing to compile.
 
-- **`better-sqlite3` instead of `node:sqlite`.** Same synchronous API shape,
-  but a native addon — it would need a compiler toolchain in the Docker image
-  (or a prebuilt binary matching the exact Node/libc combination, which is a
-  real failure mode on Alpine). `node:sqlite` is built into the Node 24
-  runtime the template already pins, verified directly in this repo before
-  committing to it, with no flag required. That removes an entire class of
-  "works locally, breaks in the container" failure for a one-machine app.
-- **Express or a hand-rolled `node:http` router instead of Hono.** Either
-  works, but both would mean writing (and getting right) cookie parsing and
-  HTML escaping by hand. Hono's `hono/cookie` and `hono/html` (an
-  auto-escaping tagged template) cover exactly that, as roughly 100KB of
-  dependency rather than a framework with its own opinions about everything
-  else. It's the only "framework" dependency in the app.
-- **A client-side framework / SPA.** Rejected outright: this app is
-  form-and-list shaped, not interaction-heavy, and server-rendered HTML forms
-  are keyboard-operable and work with JavaScript off for free — relevant given
-  the accessibility requirements in the brief and spec.
-- **A build step (tsc/bundler).** Also verified directly: Node 24.21 runs
-  `.ts` files unmodified (type-stripping), the same way `spec/*.ts` already
-  runs via Vitest. So the Docker image has nothing to compile — one stage,
-  `pnpm install --prod`, copy `src/`, run it.
+**New for this app:**
 
-`marked` renders `README.md` to HTML for `/readme/`; everything else is Node
-built-ins.
+- **Timezone handling** (`src/tz.ts`): the brief requires a declared,
+  displayed timezone (default `Australia/Sydney`) with correct deadline/
+  timeslot comparisons against real time. Rejected pulling in a date library
+  for this — Node's `Intl.DateTimeFormat` already carries full IANA tz data,
+  and the wall-clock↔UTC conversion is a well-known ~20-line technique (ask
+  `Intl` what a UTC guess renders as in the target zone, correct by the
+  difference). Verified directly against both a DST and non-DST date for
+  `Australia/Sydney` before building the rest of the app on top of it.
+- **Photo upload** (`src/uploads.ts`): the brief allows dropping this if the
+  environment fights it. Verified first, in isolation, that Node's built-in
+  `Request.formData()` (via `@hono/node-server`) parses a real
+  `multipart/form-data` upload into a `File` with a working
+  `.arrayBuffer()` — it does, so no upload dependency (e.g. `multer`) was
+  needed. Validates MIME type (JPEG/PNG/WebP only) and a 5 MB cap before
+  writing under `DATA_DIR/uploads/`, serving it back through a route that
+  only ever reads a generated, pattern-matched filename (no path traversal
+  surface from user input).
+- **Two status columns, enforced by schema**: a partial unique index
+  (`applications(item_id, claimer_device_id) WHERE status IN ('pending',
+  'confirmed')`) makes "at most one active request per device per item" a
+  database guarantee rather than an application-level check — verified
+  directly that a second active insert is rejected and that re-applying
+  after a cancellation is allowed.
 
-## Data model and permissions
+## Concurrency and the state machine
 
-Three tables: `fridges`, `members` (keyed by `(fridge_id, device_id)`, not by
-nickname, so two members called "Sam" are still two different people, and a
-browser's identity survives a refresh via an httpOnly cookie, not an account),
-and `items`, whose `shared` flag and `status` column (`kept` / `claimed` /
-`used`) together encode every visibility state the spec describes without a
-separate table for claims or history — "used" items simply stay in `items`
-with `status = 'used'`, which is what the history view reads.
-
-Every state change is one `UPDATE ... WHERE id = ? AND <the state it must
-currently be in>` — not a read, then a check, then a write. That turned out to
-double as the concurrency answer the spec explicitly asks for (two people
-claiming the same item at once): both requests run the identical guarded
-`UPDATE`, and only one can match `status = 'kept'` before the other's write
-lands — the loser gets a 409, not a corrupted claim. This is recorded in
-`CLAUDE.md` as a rule, not just an implementation detail, specifically so a
-future "fix" doesn't replace it with a less-correct read-then-write pattern.
+Every transition is a single guarded `UPDATE ... WHERE id = ? AND status =
+'<required state>'`, wrapped (with its paired item/application update) in a
+transaction for atomicity. This is the same answer as Fridge Rescue's claim
+race, applied to a two-table state machine instead of one: confirming an
+application only succeeds if the item's `status = 'open' → 'reserved'` update
+also lands a row, so two confirmations racing on two different pending
+requests for the same item resolve to exactly one winner — verified with a
+real concurrent `Promise.all` test, not just by argument.
 
 ## What's verified, and how
 
-- **Locally verified:** `pnpm typecheck` and `pnpm test` pass against the app
-  running on a throwaway `DATA_DIR`. `spec/fridge.test.ts` (new this week)
-  exercises, over real HTTP with per-member cookie jars: an unshared item
-  can't be claimed by a non-owner; a non-member is refused both read and write
-  access to another fridge; two concurrent claims on the same item resolve to
-  exactly one winner; only the claimant can unclaim their own claim; a used
-  item disappears from the current view but keeps its owner and claimant in
-  history; an owner can use their own unclaimed item directly; identical
-  nicknames in different browsers stay distinct members.
-- **Verified manually, not by `spec/`:** cross-restart persistence — the
-  Vitest run never restarts the server mid-test, so this was checked by
-  stopping and restarting the local Node process against the same `DATA_DIR`
-  and confirming a previously-added item was still in the SQLite file
-  afterwards. The architectural guarantee (the only writable state is the
-  SQLite file under the Fly-mounted volume at `/data`; `fly.toml` fixes that
-  mount) is what should make this hold across an actual Fly restart or
-  redeploy too, but that specific case is **not yet verified against the live
-  deployment**.
-- **Not yet verified at all:** the deployed `*.fly.dev` URL, pending
-  `mise.local.toml`'s `FLY_API_TOKEN`.
+- **Locally verified** (`pnpm typecheck`, `pnpm test`, 11 tests in
+  `spec/moveout.test.ts`): permission guards (non-creator can't manage or
+  confirm; a claimant can't cancel someone else's request); the pickup
+  location stays hidden from an unconfirmed requester; concurrent
+  confirmations resolve to exactly one; cancelling a confirmed booking
+  reopens the item for a backup request; applying past the deadline is
+  rejected; a completed record persists across repeated reads; a mover can't
+  request their own item or hold two active requests from one device;
+  withdrawing an item cancels its pending requests. Writing these tests
+  caught two real bugs before this ever reached a crit: a withdrawn item's
+  own application history was dropping off the claimant's page (fixed in
+  `src/routes/moveout.ts` by resolving against the full item list, not the
+  public withdrawn-filtered one), and a waitlisted applicant row had no
+  stable way to be addressed from outside the confirm button it doesn't
+  render (fixed by tagging every row with `data-application-id` in
+  `src/views/moveout-manage.ts`).
+- **Verified manually, scripted but real** (a Python client simulating
+  separate mover/claimant browsers, not a mocked unit test): the full
+  create → add item/timeslot → apply → confirm → view-with-location →
+  cancel → reopen → re-confirm → complete flow; photo upload end-to-end,
+  including rejecting an oversized file; restarting the local Node process
+  against the same `DATA_DIR` and confirming both a database row and an
+  uploaded photo file survived.
+- **Not yet verified against the live deployment** at the point this
+  paragraph was written — see below for what's expected to be re-run against
+  the actual `*.fly.dev` URL, including the redeploy-doesn't-lose-data check
+  this week's spec specifically calls out.
 
 ## TODO (you)
 
-- Once this deploys, redo the manual walkthrough (two browsers, phone width,
-  keyboard-only) against the live URL and record the result here —
-  honestly, as "deployed-verified," not folded into the local result above.
+- Say why the direction changed from Fridge Rescue to MoveOut (above).
+- Once the live checks below are run, record the real result here as
+  "deployed-verified," not folded into the local result silently.
 - Record anything you changed, pushed back on, or disagreed with once you've
   actually reviewed this version yourself — this file currently reflects the
-  single agent session that produced it, not a correction you've made yet.
-- Add your own view on the `node:sqlite` vs. `better-sqlite3` call and the
-  no-framework-on-the-client call: do you agree with the trade-off, or would
-  you reconsider either once crit 9's real-time requirement is in front of
-  you?
+  agent session that produced it, not a correction you've made yet.
+- Your own view on the two-status-column design and the no-management-token
+  decision: do you agree, or would either get revisited once crit 9's
+  real-time requirement is in front of you?

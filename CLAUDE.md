@@ -1,80 +1,120 @@
 # Your harness
 
-Rules for working on Fridge Rescue, derived from the design decisions in
+Rules for working on MoveOut, derived from the design decisions in
 `README.md`'s "what good means" section and `PROCESS.md`'s stack ADR. If a
-change would break one of these, it needs README's argument updated first, not
-a quiet exception here.
+change would break one of these, it needs README's argument updated first,
+not a quiet exception here.
 
-## Ownership and sharing
+## Identity, ownership, and the share link
 
-- An item belongs to whoever added it (`owner_member_id`). Only the owner may
-  change its name, quantity, use-by date, or its `shared` flag — and only
-  while its `status` is `'kept'`.
-- Sharing is opt-in and off by default. An item is claimable by someone other
-  than its owner only when `shared = 1 AND status = 'kept'`.
-- "Use by" is a reminder the owner set, not a food-safety claim the app makes.
-  Never phrase it, or any copy near it, as a safety verdict.
+- A visitor's identity is a single long-lived `device` cookie
+  (`src/session.ts`), set on first visit. Never trust a client-supplied id
+  field for who someone is — always resolve identity from that cookie.
+- A move-out page's creator is `moveouts.creator_device_id`, set once at
+  creation. Every creator-only action (add item, add timeslot, withdraw,
+  confirm, complete, creator-initiated cancel) checks the requester's device
+  against *that specific page's* value — never a different page's, never a
+  value the client sent.
+- There is **no separate management token**, on purpose: the brief requires
+  the share link to never double as management auth, so the simplest way to
+  guarantee that is to not have a second secret at all. `/m/:id` is the only
+  URL for a page; whether a visitor sees the public apply view or the
+  creator's dashboard is decided purely by whether their device matches
+  `creator_device_id`. Don't add a management token, a magic "admin" query
+  parameter, or anything else that would let *knowing a URL* substitute for
+  being recognised as the creator.
+- A nickname is display text only, never an identity key. The same nickname
+  from two different devices is two different people — identity is always
+  `(entity, device_id)`, never nickname.
 
-## State transitions (the whole model)
+## Two status columns, not one
 
-`kept → claimed → kept → … → used`. Used is terminal — no route changes a used
-item back to anything else.
+`items.status` (`open` / `reserved` / `handed_over` / `withdrawn`) and
+`applications.status` (`pending` / `confirmed` / `cancelled` / `completed`)
+are separate columns on separate tables, by design — don't collapse them into
+one field. An item can have several applications over its life; only ever one
+of them active at a time; the item's own status outlives any single
+application's row.
 
-- `kept → claimed`: only a member who is **not** the owner, only when
-  `shared = 1`.
-- `claimed → kept` (unclaim): only the member who holds the claim
-  (`claimed_by_member_id`), never the owner and never a bystander.
-- `kept → used` or `claimed → used`: the claimant can use what they claimed;
-  the owner can use their own item only while nobody else has claimed it.
-- Nobody may edit, re-share, or reassign an item while it is `claimed` — the
-  claimant must unclaim it first. Don't add an owner override for this; it's
-  the one invariant the brief calls out explicitly.
+Transitions, and who may cause them:
 
-## Enforcement is server-side, always
+- `pending → confirmed`: creator only, and only if the item is still `open`
+  **and** the application's chosen timeslot hasn't already passed — if it has,
+  the fix is for the claimant to change their own timeslot
+  (`POST /applications/:id/timeslot`), never a creator override.
+- `pending|confirmed → cancelled`: the claimant, on their own application, any
+  time. The creator, only on a `confirmed` one, and only with a non-empty
+  reason that gets stored and shown back to the claimant — never a silent
+  revocation of a confirmed booking.
+- `confirmed → completed`: creator only.
+- `open → withdrawn`: creator only, and only while the item is still `open`
+  — an item with a confirmed reservation must be unclaimed (cancelled) first,
+  never withdrawn out from under a confirmed claimant. Withdrawing cascades
+  to auto-cancel that item's still-pending applications (reason: "Item
+  withdrawn by the mover") rather than leaving them stranded and unreachable.
+- `reserved → open`: automatic, inside the same transaction as cancelling the
+  confirmed application that held it — never a separate manual step.
 
-- Every mutation is a single `UPDATE ... WHERE id = ? AND <required current
-  state>` statement, checked against the requester's resolved `member` row —
-  never a read-then-write, and never enforced only by hiding a button in the
-  view. A 0-row update means someone else changed it first; return a plain
-  conflict message (409/403), not a crash.
-- This is also the whole concurrency story: two claims racing each other both
-  run the same guarded `UPDATE`, and only one can match `status = 'kept'`
-  before the other's write lands. Don't "fix" a double-claim bug by adding a
-  lock, a queue, or a read-then-check in the handler — if one shows up, the
-  guarded `UPDATE`'s `WHERE` clause is wrong, not the strategy.
+`cancelled` and `completed` are terminal. Nothing ever moves an application
+out of either state.
 
-## Identity and isolation
+## Confirming is the one place two requests can race
 
-- A member is `(fridge_id, device_id)` plus a nickname. `device_id` comes only
-  from the httpOnly cookie `session.ts` sets — never from a client-supplied
-  field. Two different device cookies with the same nickname are two
-  different members; never deduplicate members by nickname.
-- Every route resolves the fridge from the **entity being acted on** (the item
-  or fridge id in the URL), then checks the requester is a member of that
-  specific fridge, before reading or returning anything about it. A fridge or
-  item outside the requester's membership 404s — it doesn't reveal that the
-  id exists.
-- Never log, print, or echo back an invite token or a device cookie value in
-  full. They're the only thing standing in for a password in this app.
+Guard every state transition with a single `UPDATE ... WHERE id = ? AND
+status = '<required current state>'` — never read-then-check-then-write. This
+is what makes two simultaneous confirmations on different pending
+applications for the *same item* resolve to exactly one winner: both
+requests run the identical guarded `items.status = 'open' → 'reserved'`
+update, and only one can still find `status = 'open'` once the other's write
+has landed (Node's single-threaded loop plus `node:sqlite`'s synchronous
+calls mean the two can't interleave mid-statement). If a double-confirmation
+bug ever shows up, the fix is a missing or wrong `WHERE` clause, not a lock,
+a queue, or an application-level mutex.
+
+`src/db.ts`'s `withTransaction` wraps the item+application pair of updates
+for atomicity (all-or-nothing if something throws); the concurrency guarantee
+itself comes from the guarded `WHERE`, not from the transaction boundary.
+
+## The deadline gate
+
+Applying and confirming both check `now <= moveouts.deadline_at` and refuse
+once it's passed. Cancelling and completing are **never** blocked by the
+deadline — an existing confirmed booking must stay actionable (so it can
+still be marked picked up, or cancelled with a reason) after the deadline
+passes. Nothing auto-completes, auto-withdraws, or auto-cancels anything
+because a deadline passed — every transition is an explicit action by a
+person, never a background sweep.
+
+## Timezones
+
+A move-out page declares one IANA timezone (`moveouts.timezone`, default
+`Australia/Sydney`). Every deadline and timeslot is stored as a real UTC
+instant (`src/tz.ts#zonedDateTimeToUtc`), converted from the wall-clock value
+entered in that timezone — never stored as a naive local string, and never
+compared against `now` without first being a real instant. Display always
+names the timezone (`formatInZone`) rather than leaving it implicit.
+
+## Persistence
+
+All durable state — move-out pages, timeslots, items, applications, and
+uploaded photos — lives under `DATA_DIR` (the SQLite file plus
+`DATA_DIR/uploads/`). Nothing load-bearing goes in a module-level variable,
+browser storage, or a container path outside `DATA_DIR`.
 
 ## Accessibility and legibility
 
-- Status is always shown as text ("Claimed by Bob", "Shareable"), never colour
-  alone.
-- Every interactive control is a real `<form>`, `<button>`, or `<input>` with
-  an associated `<label>` — keyboard-operable by default. Don't attach
-  behaviour to a bare `<div onclick>` or `<span>`.
-- The one piece of client JS (copy-invite-link) is progressive enhancement
-  only: the page must work, and the link must still be readable and
-  selectable, with JavaScript off.
+- Status is always shown as text ("Waiting for confirmation", "Confirmed —
+  pickup details below"), never colour alone.
+- Every interactive control is a real `<form>`/`<button>`/`<input>`/`<select>`
+  with an associated `<label>` — keyboard-operable by default.
+- Errors are specific (what was wrong, not just "error") and never discard
+  what the person already typed.
 
-## Persistence and scope
+## Current scope — don't quietly expand it
 
-- All durable state (fridges, members, items, claims, history) lives in the
-  SQLite file under `DATA_DIR`. Nothing load-bearing goes in a module-level
-  variable, a browser's `localStorage`, or a container's writable layer
-  outside `/data`.
-- Out of scope this crit, on purpose: real-time sync, partial-quantity claims,
-  accounts/email, AI features, notifications. Don't add any of these as a
-  "quick win" without first updating README's "good" argument — a feature not
-  argued for there isn't one the spec or the marker is looking for.
+Out of scope this crit, on purpose: payments, bidding, delivery, in-app chat,
+ratings, AI recommendations, campus identity login, a cross-page marketplace,
+email/SMS notifications, automatic backup-promotion, calendar integration,
+partial-quantity requests. Don't add any of these as a "quick win" without
+first updating `README.md`'s "good" argument — a feature not argued for there
+isn't one the spec or the marker is looking for.

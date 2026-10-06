@@ -5,32 +5,43 @@ account before the cutoff. Nothing in this file is a finished reflection.**
 
 ## What actually happened this week (facts, for reference while you write)
 
-- Chose the project (Fridge Rescue, a shared-fridge tracker) and wrote a
-  detailed functional spec covering identity, item fields, and the
-  claim/unclaim/use rules.
-- Worked with Claude Code to choose and verify a stack (Node 24's built-in
-  `node:sqlite`, Hono, no build step — see `PROCESS.md`'s ADR) before writing
-  any app code.
-- Reviewed and approved an implementation plan (schema, routes, concurrency
-  approach) before implementation began.
-- Got a working app: create/join a fridge, add/edit items, share/claim/
-  unclaim/mark-used, a history view, all persisted to SQLite.
-- Added `spec/fridge.test.ts`, covering the sharing, isolation, concurrency,
-  and history invariants from the brief.
-- Verified locally (typecheck, tests, a manual multi-browser walkthrough, a
-  manual restart-persistence check); deployment to Fly was/wasn't completed
-  this session — see `PROCESS.md` for exactly what's still unverified.
+- Built and deployed a first crit 8 submission (Fridge Rescue, a shared-fridge
+  tracker) earlier this week, with its own working spec, docs, and a live
+  deployment.
+- Changed direction to MoveOut, a move-out item hand-off tool, and gave Claude
+  Code a detailed functional spec for it: identity via browser cookie (no
+  accounts), items and timeslots, a request/confirm/cancel/complete lifecycle
+  with two separate status fields, and specific privacy and concurrency
+  rules (pickup location hidden until confirmed; only one active confirmation
+  per item, enforced even under two simultaneous confirm attempts).
+- Reviewed and approved an implementation plan (schema, routes, timezone
+  handling, photo-upload approach) before implementation began.
+- Got a working app: create a page, add items and pickup times, request,
+  confirm, cancel (by either side, with a reason required from the mover),
+  mark picked up, a manage dashboard organised as not-yet-arranged / upcoming
+  / completed.
+- Verified the timezone conversion and the multipart photo upload path in
+  isolation before building the rest of the app on top of either.
+- Added `spec/moveout.test.ts` (11 tests), which caught two real bugs
+  (a dropped application history on a withdrawn item; an unaddressable
+  waitlisted applicant row) before they reached a crit.
+- Verified locally end-to-end (typecheck, automated tests, a scripted
+  multi-browser walkthrough, a restart-persistence check including an
+  uploaded photo); deployment/live verification status is recorded honestly
+  in `PROCESS.md` rather than assumed here.
 
 ## Prompt 1: What was the breakthrough that moved the work forward?
 
 **TODO (you).** Candidates worth considering, if one of them is actually true
-for you: realising the claim/unclaim/use rules could all collapse into one
-`shared` flag plus one `status` column instead of a separate "claims" table;
-seeing that a single guarded `UPDATE ... WHERE <state>` statement was both the
-permission check *and* the concurrency fix, rather than two separate problems;
-or something about directing an agent through a plan-then-build workflow that
-didn't occur to you before this week. Don't use one of these if it isn't
-actually what moved things forward for you — name the real one.
+for you: realising that "one active confirmation per item" could be a
+database constraint and a guarded `UPDATE`'s `WHERE` clause instead of
+application-level locking; deciding to verify the timezone conversion and the
+photo upload in isolation *before* building routes around either, rather than
+discovering either was broken later; or something about what changed between
+specifying Fridge Rescue and specifying MoveOut that made the second spec
+easier or harder to hand to an agent. Don't use one of these if it isn't
+actually what moved things forward for you — name the real one, including if
+it was the decision to pivot away from Fridge Rescue itself.
 
 ## Prompt 2: What did this work change about who I want to be as a software developer?
 

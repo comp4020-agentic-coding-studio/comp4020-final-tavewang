@@ -1,54 +1,88 @@
-# Fridge Rescue
+# MoveOut
 
-A shared fridge has an inventory problem nobody wants to own: things go
-unnoticed until they're rotten, and nobody's sure what's actually free to eat.
-Fridge Rescue is a small, multi-user web app for a house of flatmates to track
-what's in the fridge, which of it its owner is happy to share, who's claimed
-what, and what's already been eaten — so two people don't reach for the same
-half-bag of spinach, and nothing good goes to waste in silence.
+Moving out of a dorm room on a deadline produces a predictable mess: a pile of
+things that still work, a group chat full of "is this gone yet?", and no clear
+record of who's actually coming to collect what. MoveOut is a small web app
+for exactly that moment — a mover lists what they're giving away, sets a
+deadline and a few pickup time windows, and shares one link. Whoever wants
+something requests a time; the mover confirms one request per item; everyone
+else can see it's spoken for without a round of messages asking.
+
+## The real problem this responds to
+
+ANU's own Give It Forward project documents the underlying issue directly:
+residential halls generate a large volume of move-out waste every year, with
+much of it "usable items simply discarded" rather than donated, and the open
+challenges are less about convincing people to give things away and more about
+the quality of what gets donated and reducing dumping at donation points
+([McCusker Institute, *Give It Forward: circular giving in residential
+halls*](https://mccuskerinstitute.anu.edu.au/project/give-it-forward-circular-giving-in-residential-halls/)).
+That source establishes the waste problem is real — it says nothing about
+whether a scheduling tool like this one actually helps, which is a separate
+claim this app has not earned yet.
 
 ## What this app is
 
-- A **fridge** belongs to one household. Anyone with its invite link can join.
-- A **member** is a person in that fridge, known by a nickname they pick when
-  they join — no account, no email.
-- An **item** belongs to the member who added it. Its owner decides whether
-  it's just _kept_ (visible, but private) or _shareable_ (anyone else in the
-  fridge can claim it). Once claimed, it's reserved for that person until they
-  give it back or mark it used.
+- A **move-out page** belongs to one mover: a title, a deadline, a rough area
+  (shown publicly), an exact pickup spot (shown only once a request is
+  confirmed), a declared timezone, and a handful of pickup time windows.
+- An **item** is one thing (or a set that must go together) the mover is
+  giving away: a name, condition notes, an optional photo, optional extra
+  notes.
+- A **request** is one person asking for one item at one time window. A
+  mover confirms at most one request per item; everyone else who asked stays
+  on record as a backup in case the confirmed one falls through.
 
-The scenario this is built around: I have half a bag of spinach I won't finish
-before I leave for the weekend. I mark it shareable. A flatmate sees it, claims
-it so nobody else takes it too, and later marks it used. The spinach's story —
-who kept it, who claimed it, when it was used — stays in the fridge's history
-even after it's gone.
+The scenario this is built around: I'm moving out Friday with a lamp, a chair,
+and a rice cooker to give away. I make a page, add a couple of pickup windows,
+and post the link to my old floor's group chat. Someone requests the lamp for
+Friday afternoon; I confirm it; they see exactly where to come. If they
+cancel, the lamp reopens and I can confirm the next person who asked.
 
 ## Core flow
 
-1. Create a fridge (give it a name, give yourself a nickname) or join one via
-   an invite link.
-2. Add an item: a name, and optionally a quantity, a date you're hoping to use
-   it by, and whether it's shareable.
-3. The owner can edit it, or toggle sharing, any time nobody's claimed it.
-4. Anyone else in the fridge can claim a shareable item — one claim at a time,
-   enforced by the server, not just by hiding a button.
-5. The claimant can give it back (unclaiming it) or mark it used. The owner can
-   mark their own unclaimed item used directly.
-6. Used items move to a **history** view and stay there — owner, claimant, and
-   when, all kept, nothing deleted.
+1. Create a page (title, deadline + timezone, area, exact pickup spot,
+   your name).
+2. Add items and a few pickup time windows.
+3. Share the one link — it lets anyone browse and request, never manage.
+4. A visitor requests an item: a name, a time window, an optional note. They
+   see "waiting for confirmation," not "booked."
+5. You confirm one request per item. The requester now sees the exact pickup
+   spot. Everyone else who asked stays queued as a backup.
+6. Either side can cancel. A requester cancels freely; if you cancel a
+   *confirmed* booking, you have to say why, and they see it.
+7. You mark it picked up once it's actually gone. That record — and anyone
+   who asked and didn't get it — stays visible in history, not deleted.
 
 ## This week's scope (crit 8)
 
-Built: everything above, persisted to SQLite on the Fly volume, so it survives
-a refresh, a restart, and a redeploy. Multiple people can use the same fridge
-from their own browsers today — they just refresh to see each other's changes;
-real-time updates are next week's spec (crit 9), and the data model here was
-chosen so that doesn't require a rewrite.
+Built: everything above, persisted to SQLite on the Fly volume (items,
+requests, and uploaded photos all survive a refresh, a restart, and a
+redeploy — all three checked directly this week, not assumed). Multiple
+people can use the same page from their own browsers today; they refresh to
+see each other's changes. Real-time updates are next week's spec (crit 9); the
+two separate status columns (an item's and a request's) and the
+guarded-update pattern behind every state change were chosen so that doesn't
+require a rewrite.
 
-Deliberately not built yet (see the final project brief's "not implemented"
-list this maps to): AI recipes, barcode/photo recognition, shopping lists,
-notifications, leaderboards, real accounts, partial-quantity claims, real-time
-sync.
+Deliberately not built yet: payments, bidding, delivery, in-app chat, ratings,
+AI recommendations, campus identity login, a campus-wide marketplace,
+email/SMS notifications, automatic backup-promotion when a confirmed booking
+falls through, calendar integration.
+
+Known, named limits rather than silent gaps:
+
+- Identity is a browser cookie, not an account. Clear your cookies (or switch
+  devices) and the app has no way to connect you back to your past requests
+  or pages — there is no password reset or account recovery, because there is
+  no account.
+- The share link and the page's own URL are the same thing; what you can do
+  with it depends entirely on whether your browser is recognised as the
+  creator, never on who else has seen the link.
+- "Hoping to collect by" dates and "condition notes" are exactly what the
+  mover typed — the app makes no food-safety-style claim about an item's
+  condition or usability.
+- Photo upload is capped at 5 MB, JPEG/PNG/WebP only, one per item.
 
 ## Running it
 
@@ -58,85 +92,86 @@ pnpm dev            # http://localhost:8080, data in ./data/app.db
 pnpm check          # typecheck + the spec, against a running instance
 ```
 
-`DATA_DIR` controls where the SQLite file lives (`/data` in the deployed
-container, via `fly.toml`'s volume mount; `./data` locally by default).
+`DATA_DIR` controls where SQLite and uploaded photos live (`/data` in the
+deployed container, via `fly.toml`'s volume mount; `./data` locally).
 
 ## What "good" means for this app — first draft
 
-This is a first, rough pass, written before most of a week of real use — it's
-expected to change as the pod and I actually live with it.
+This is a first pass, written before a week of real use by an actual pod —
+expected to change once people other than me have tried to give something
+away or collect it through this.
 
-1. **Adding an item is simple.** One required field (name); everything else —
-   quantity, a use-by date, sharing — is optional and changeable later. Nobody
-   should have to fill in a form to avoid a fridge disaster.
-2. **Nothing can be claimed without its owner's say-so.** Sharing is opt-in and
-   off by default; an item is only ever claimable because its owner actively
-   marked it so.
-3. **Claim state is unambiguous and never double-booked.** One item, one
-   claimant at a time, enforced by the database, not the UI — two people
-   tapping "claim" within the same second still only lets one through.
-4. **Unclaiming carries no penalty.** Changing your mind about a claimed item
-   is a plain, visible action, not something that ranks or shames a flatmate
-   for giving something back.
-5. **What happened stays recorded.** Claims and uses aren't deleted; the
-   history view is the house's shared memory of who had what.
+1. **A requester can tell the difference between "I asked" and "it's mine."**
+   Every request starts "waiting for confirmation" in plain text; nothing
+   implies a booking until the mover has actually confirmed it.
+2. **One item never has two live confirmed takers.** The database — not the
+   interface — refuses a second confirmation while one is still active, even
+   under two requests landing at once.
+3. **The mover can see, at a glance, what still needs a decision and what's
+   already arranged.** The manage page is organised as a checklist being
+   cleared, not a flat list of everything ever posted.
+4. **A cancellation has a clear next state, not a dead end.** A cancelled
+   confirmed booking reopens the item immediately, with the reason visible to
+   the person it affected; a backup requester can be confirmed right away.
+5. **What was given, to whom, and when stays on the record.** Completed
+   hand-offs aren't deleted — they're the only proof anything here actually
+   happened.
+6. **Finishing one hand-off costs as few messages as possible.** The target
+   is: request, one confirmation, one pickup — not a back-and-forth to work
+   out whether someone is still coming.
 
-**TODO (you):** this list is a starting argument, not a finished one. Before
-the crit, decide: do you actually believe these five are the right ones, or
-the right order? Is there a sixth thing you've noticed matters more once
-people were actually using it (e.g. how use-by dates should or shouldn't imply
-food safety, or how strangers vs. housemates should be treated differently)?
-Say so in your own words — the marker reads this page first, and a rewritten
-version in your own voice is worth more than five points you didn't choose.
+**TODO (you):** this is a starting argument, not a finished one. Before the
+crit: do you still agree with these six, or has a week of actually using it
+surfaced a seventh thing that matters more (e.g. how a *set* of items that
+must go together should read differently from a single item, or what should
+happen to a page once its deadline passes and things are still unclaimed)?
+Rewrite this in your own words — the marker reads this page first, and reads
+it against your app, your `CLAUDE.md`, and your `spec/`.
 
-**TODO (you):** add a sentence here naming anything you deliberately decided
-*not* to build this week and why it was the right cut, if that isn't obvious
-from "This week's scope" above.
+**TODO (you):** say here, explicitly, what you decided not to build this week
+and why that was the right cut, if it isn't already obvious from "This week's
+scope" above.
 
 ## What I looked at while deciding this
 
-Two pieces came up while thinking about what "good" means for an app sized for
-one household rather than the general public (found via search, summarised
-here — read them yourself before citing them as something that shaped your
-thinking, rather than citing this summary):
+Found by search, summarised here — read either one yourself before citing it
+as something that actually shaped your thinking, rather than citing this
+summary:
 
-- Robin Sloan, [**"The home-cooked app"**](https://www.robinsloan.com/notes/home-cooked-app/)
-  (2020) and its five-years-later
-  [follow-up](https://www.robinsloan.com/lab/five-years-of-home-cooked-apps/)
-  (2025) — software built for a small, known group of people (his own family,
-  in his case) that answers to them rather than to growth or a market, and
-  that's allowed to just be finished rather than endlessly redesigned. Relevant
-  here because a shared-fridge app for one house is about as "home-cooked" as
-  this brief gets.
-- Ben Hoyt, [**"The small web is beautiful"**](https://benhoyt.com/writings/the-small-web-is-beautiful/) —
-  an argument for small, simple software as a positive design choice (fewer
-  moving parts, easier to understand end-to-end, cheaper to run) rather than a
-  compromise. Relevant to the "smallest schema that can carry the core
-  interaction" choice in `PROCESS.md`.
+- [**Buy Nothing Project**](https://en.wikipedia.org/wiki/Buy_Nothing_Project) —
+  a large, long-running network of hyperlocal gift-economy groups: give
+  things away for free to neighbours, no money, no bartering, norms enforced
+  socially rather than by a platform (first-come-first-served or a random
+  draw when several people want the same thing). Relevant because it's the
+  closest real-world precedent for "several people might want one free thing,
+  and the group has to agree on who gets it without anyone feeling cheated" —
+  a social problem this app tries to solve mechanically instead, which is
+  itself a design choice worth being honest about rather than assuming is an
+  improvement.
+- The ANU Give It Forward page above, read again for its framing of the
+  *problem* rather than any solution — it specifically does not claim a
+  scheduling tool is the fix, which is the distinction this README keeps
+  separate throughout.
 
-**TODO (you):** if you actually read either of these (or something better),
-replace this paragraph with what you think, specifically — where you agree,
-where Fridge Rescue doesn't live up to the idea yet, or where a shared fridge
-is different enough from a solo home-cooked app that the comparison breaks.
+**TODO (you):** if you read something else that actually shaped a decision —
+the brief's own pointers to the small web, or something you found yourself —
+replace or add to this list with your own account of what it changed about
+the design, not just a summary.
 
 ## What can and can't be checked automatically
 
-Checkable, and covered in `spec/`: an item can't be claimed unless its owner
-shared it; a non-member can't read or change another fridge's data; two
-simultaneous claims on the same item resolve to exactly one winner; only a
-claimant can unclaim their own claim; a used item still appears in history
-with its owner, claimant, and status intact.
+Checkable, and covered in `spec/moveout.test.ts`: a non-creator can't manage a
+page or confirm its requests; a requester can't cancel someone else's
+request; an unconfirmed requester never receives the pickup location; two
+simultaneous confirmations on one item resolve to exactly one; cancelling a
+confirmed booking reopens the item for a backup request; requesting after the
+deadline is rejected; a completed hand-off record persists; a mover can't
+request their own item or accept two active requests from one browser;
+withdrawing an item cancels its pending requests.
 
-Only a person can judge: whether the interface actually reads as "a shared
-kitchen" rather than a generic form; whether the wording around claiming and
-using feels low-stakes rather than naggy; whether the five-point "good"
-argument above holds up once someone other than me is relying on it at a crit.
-
-## Known limits this week
-
-- No real-time updates — see each other's changes by refreshing.
-- One invite link per fridge; it isn't rotated if it leaks.
-- No account recovery: lose the browser's cookie, lose that membership (you'd
-  rejoin via the invite link under a new identity).
-- Use-by date is exactly that — a reminder the owner set, not a food-safety
-  claim the app is making.
+Only a person can judge: whether the manage page actually reads as "a list
+being cleared" rather than a database dump; whether the wording around
+requesting and cancelling feels low-stakes rather than like a rejection;
+whether a stranger unfamiliar with the project can complete a request in
+under a minute without being told how; whether the six-point "good" argument
+above survives contact with an actual pod at the crit.
