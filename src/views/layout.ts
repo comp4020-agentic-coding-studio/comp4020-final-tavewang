@@ -13,12 +13,12 @@ export async function layout(title: string, body: unknown): Promise<string> {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${title} · Fridge Rescue</title>
+    <title>${title} · MoveOut</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <header class="site-header">
-      <a class="brand" href="/">🧊 Fridge Rescue</a>
+      <a class="brand" href="/">📦 MoveOut</a>
       <a class="muted-link" href="/readme/">About this app</a>
     </header>
     <main>${body}</main>

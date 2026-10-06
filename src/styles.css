@@ -1,19 +1,19 @@
 :root {
-  --bg: #fdf8f3;
+  --bg: #f7f8fa;
   --surface: #ffffff;
-  --ink: #2b2420;
-  --muted: #6b6058;
-  --line: #e6ddd2;
-  --accent: #c9622a;
+  --ink: #202327;
+  --muted: #5b6068;
+  --line: #e1e4e9;
+  --accent: #2a5db0;
   --accent-ink: #ffffff;
-  --kept: #6b6058;
-  --kept-bg: #efe9e2;
-  --shareable: #2f6b4f;
-  --shareable-bg: #e3f1e9;
-  --claimed: #8a5a00;
-  --claimed-bg: #fbeed2;
-  --used: #8a8077;
-  --used-bg: #efece8;
+  --pending: #5b6068;
+  --pending-bg: #eceef1;
+  --active: #8a5a00;
+  --active-bg: #fbeed2;
+  --done: #2f6b4f;
+  --done-bg: #e3f1e9;
+  --closed: #8a8077;
+  --closed-bg: #efece8;
   --error: #9c2b2b;
   --error-bg: #fbe7e7;
   --radius: 10px;
@@ -56,7 +56,7 @@ a {
 }
 
 main {
-  max-width: 640px;
+  max-width: 680px;
   margin: 0 auto;
   padding: 1.25rem 1.25rem 4rem;
 }
@@ -85,11 +85,6 @@ section {
   gap: 0.3rem;
 }
 
-.checkbox-field {
-  flex-direction: row;
-  align-items: center;
-}
-
 label {
   font-weight: 600;
   font-size: 0.92rem;
@@ -97,6 +92,9 @@ label {
 
 input[type="text"],
 input[type="date"],
+input[type="datetime-local"],
+input[type="file"],
+select,
 input:not([type]) {
   padding: 0.55rem 0.6rem;
   border: 1px solid var(--line);
@@ -107,6 +105,7 @@ input:not([type]) {
 }
 
 input:focus,
+select:focus,
 button:focus,
 a:focus,
 summary:focus {
@@ -116,7 +115,7 @@ summary:focus {
 
 button {
   border: none;
-  background: var(--kept-bg);
+  background: var(--pending-bg);
   color: var(--ink);
   padding: 0.55rem 1rem;
   border-radius: 8px;
@@ -147,39 +146,24 @@ section form > button[type="submit"] {
   border-radius: 8px;
 }
 
-.fridge-list {
+.error-inline {
+  color: var(--error);
+  font-size: 0.88rem;
+}
+
+.plain-list {
   list-style: none;
   padding: 0;
   margin: 0;
 }
 
-.fridge-list li {
+.plain-list li {
   padding: 0.4rem 0;
 }
 
 .muted {
   color: var(--muted);
   font-size: 0.9rem;
-}
-
-.tabs {
-  display: flex;
-  gap: 1rem;
-  margin-bottom: 1rem;
-  border-bottom: 1px solid var(--line);
-}
-
-.tab {
-  padding: 0.5rem 0.1rem;
-  text-decoration: none;
-  color: var(--muted);
-  font-weight: 600;
-  border-bottom: 2px solid transparent;
-}
-
-.tab.active {
-  color: var(--ink);
-  border-bottom-color: var(--accent);
 }
 
 .invite-row {
@@ -212,18 +196,32 @@ section form > button[type="submit"] {
   padding: 0.75rem 1rem;
 }
 
-.item-card.tone-kept {
-  border-left-color: var(--kept);
+.item-card.tone-pending {
+  border-left-color: var(--pending);
 }
-.item-card.tone-shareable {
-  border-left-color: var(--shareable);
+.item-card.tone-active {
+  border-left-color: var(--active);
 }
-.item-card.tone-claimed {
-  border-left-color: var(--claimed);
+.item-card.tone-done {
+  border-left-color: var(--done);
+  opacity: 0.85;
 }
-.item-card.tone-used {
-  border-left-color: var(--used);
-  opacity: 0.8;
+.item-card.tone-closed {
+  border-left-color: var(--closed);
+  opacity: 0.75;
+}
+
+.item-main {
+  flex: 1;
+  min-width: 200px;
+}
+
+.item-photo {
+  max-width: 160px;
+  max-height: 160px;
+  border-radius: 8px;
+  display: block;
+  margin-bottom: 0.4rem;
 }
 
 .item-name {
@@ -246,21 +244,21 @@ section form > button[type="submit"] {
   font-weight: 700;
 }
 
-.tone-kept .item-badge {
-  background: var(--kept-bg);
-  color: var(--kept);
+.tone-pending .item-badge {
+  background: var(--pending-bg);
+  color: var(--pending);
 }
-.tone-shareable .item-badge {
-  background: var(--shareable-bg);
-  color: var(--shareable);
+.tone-active .item-badge {
+  background: var(--active-bg);
+  color: var(--active);
 }
-.tone-claimed .item-badge {
-  background: var(--claimed-bg);
-  color: var(--claimed);
+.tone-done .item-badge {
+  background: var(--done-bg);
+  color: var(--done);
 }
-.tone-used .item-badge {
-  background: var(--used-bg);
-  color: var(--used);
+.tone-closed .item-badge {
+  background: var(--closed-bg);
+  color: var(--closed);
 }
 
 .item-actions {
@@ -274,6 +272,23 @@ section form > button[type="submit"] {
   cursor: pointer;
   font-weight: 600;
   color: var(--accent);
+}
+
+.applicant-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.4rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.applicant-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.92rem;
 }
 
 .history-table {
