@@ -1,52 +1,33 @@
 # Crit 8 reflection
 
-**Status: scaffold only — the two prompts below need your own first-person
-account before the cutoff. Nothing in this file is a finished reflection.**
+## The breakthrough
 
-## What actually happened this week (facts, for reference while you write)
+The breakthrough was making practical usefulness the criterion for choosing
+my project. I initially asked an agent for ideas and kept receiving concepts
+that sounded suitable for a multiplayer demonstration. I pushed back because
+I wanted to address a real problem. After exploring shared-fridge coordination,
+I chose MoveOut: helping students arrange collection of unwanted possessions
+before a moving deadline.
 
-- Built and deployed a first crit 8 submission (Fridge Rescue, a shared-fridge
-  tracker) earlier this week, with its own working spec, docs, and a live
-  deployment.
-- Changed direction to MoveOut, a move-out item hand-off tool, and gave Claude
-  Code a detailed functional spec for it: identity via browser cookie (no
-  accounts), items and timeslots, a request/confirm/cancel/complete lifecycle
-  with two separate status fields, and specific privacy and concurrency
-  rules (pickup location hidden until confirmed; only one active confirmation
-  per item, enforced even under two simultaneous confirm attempts).
-- Reviewed and approved an implementation plan (schema, routes, timezone
-  handling, photo-upload approach) before implementation began.
-- Got a working app: create a page, add items and pickup times, request,
-  confirm, cancel (by either side, with a reason required from the mover),
-  mark picked up, a manage dashboard organised as not-yet-arranged / upcoming
-  / completed.
-- Verified the timezone conversion and the multipart photo upload path in
-  isolation before building the rest of the app on top of either.
-- Added `spec/moveout.test.ts` (11 tests), which caught two real bugs
-  (a dropped application history on a withdrawn item; an unaddressable
-  waitlisted applicant row) before they reached a crit.
-- Verified locally end-to-end (typecheck, automated tests, a scripted
-  multi-browser walkthrough, a restart-persistence check including an
-  uploaded photo); deployment/live verification status is recorded honestly
-  in `PROCESS.md` rather than assumed here.
+That choice gave the project a specific interaction to concentrate on. A
+request expresses interest; confirmation makes an arrangement; marking an
+item collected records its outcome. Separating those stages made the brief
+more precise and gave the agent concrete rules to implement. The repository
+preserves the change from Fridge Rescue to MoveOut in
+[ab091d7](https://github.com/comp4020-agentic-coding-studio/comp4020-final-tavewang/commit/ab091d7c22f21d30ab02b9fca04817a2d30bdc6a).
 
-## Prompt 1: What was the breakthrough that moved the work forward?
+## The developer I want to become
 
-**TODO (you).** Candidates worth considering, if one of them is actually true
-for you: realising that "one active confirmation per item" could be a
-database constraint and a guarded `UPDATE`'s `WHERE` clause instead of
-application-level locking; deciding to verify the timezone conversion and the
-photo upload in isolation *before* building routes around either, rather than
-discovering either was broken later; or something about what changed between
-specifying Fridge Rescue and specifying MoveOut that made the second spec
-easier or harder to hand to an agent. Don't use one of these if it isn't
-actually what moved things forward for you — name the real one, including if
-it was the decision to pivot away from Fridge Rescue itself.
+This process clarified the importance of my judgement when working with an
+agent. Generating more possibilities did not settle what was worth building;
+progress depended on stating who should benefit and what difficulty the
+software should address. I want to become a developer who can explain those
+choices and keep implementation accountable to them.
 
-## Prompt 2: What did this work change about who I want to be as a software developer?
-
-**TODO (you).** This is yours to answer honestly; a fabricated answer is worse
-than a short true one. If nothing changed yet, it's fine to say that and say
-what you're watching for across crits 9 and 10 instead.
-
-*(150–300 words total once both prompts are answered.)*
+MoveOut also leaves me with an assumption to test: clearer arrangements might
+reduce the effort of giving things away. Evidence that usable goods are
+discarded does not establish that my app will help. My next step is to observe
+a mover and a recipient using the flow, particularly whether they understand
+when a request becomes a confirmed pickup and what happens after a
+cancellation. That feedback should determine the next revision of what
+"good" means here.

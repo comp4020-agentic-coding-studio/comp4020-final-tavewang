@@ -1,128 +1,144 @@
 # Process overview
 
-This is the current version of this file, written for crit 8, replacing a
-prior draft from earlier this same week. It's meant to be rewritten, not
-appended to, as the project moves through crits 9 and 10 — this is where
-things stood after this session, not a running log.
+This Crit 8 account draws on the project-selection conversation, Git history
+and agent-reported checks. The reflection was prepared with agent assistance.
 
-## The pivot this file has to be honest about
+## Choosing a problem and directing the agent
 
-Earlier this week, this same repo had a working crit 8 submission for a
-different project — Fridge Rescue, a shared-fridge item tracker — built,
-tested, and deployed to this app's `*.fly.dev` URL. I then changed final-
-project direction to MoveOut, a move-out item hand-off tool, for reasons that
-are mine to record here rather than the agent's to invent: **TODO (you)** —
-say briefly why the direction changed. The commit history shows both: the
-Fridge Rescue commits stay in the log unmodified, and the MoveOut commits sit
-on top of them as a real pivot, not a rewrite. The stack question below was
-re-asked rather than assumed to still hold, even though the answer turned out
-to be the same.
+I used ChatGPT to explore project ideas and prepare a brief for Claude. I
+considered shared-fridge coordination, then continued questioning whether the
+suggestions addressed a useful problem. My decisive instruction was that the
+project should solve a real-world problem. I chose student move-out handovers
+and asked for an implementation prompt. MoveOut gave that aim a concrete
+deadline and an observable outcome: whether an item was actually collected.
+The distinction between expressing interest and agreeing to a pickup also
+gave the application a specific coordination problem to address. The detailed
+brief was developed with ChatGPT.
 
-## What I asked for
+The resulting brief specified free collection, a moving deadline, pickup
+windows and separate request and item states. It required one confirmed
+recipient per item, cancellation that reopens availability, and location
+details withheld until confirmation. It excluded payments, delivery and chat.
+These boundaries gave Claude a concrete workflow and observable constraints.
+The target was a useful handover between a mover and recipients reached through
+an existing group, without first building a large public marketplace.
 
-I gave the agent the final project brief, crit 8's spec, and a detailed
-functional spec of my own for MoveOut: the identity model (a browser cookie,
-not accounts), the item/request fields, the full confirm/cancel/complete
-rules including the two-separate-status-columns requirement, what's
-explicitly out of scope this week, and what each of `README.md`, `CLAUDE.md`,
-`PROCESS.md`, and the reflection needed to contain. The agent worked from
-that brief; it chose the stack and data model within it, proposed a plan
-(schema, routes, concurrency approach, photo-upload approach, order of work),
-and I reviewed and approved that plan before implementation began.
+The earlier Fridge Rescue implementation remains in history. The data model
+changed in [ab091d7](https://github.com/comp4020-agentic-coding-studio/comp4020-final-tavewang/commit/ab091d7c22f21d30ab02b9fca04817a2d30bdc6a),
+followed by the MoveOut routes and views in
+[3929ad3](https://github.com/comp4020-agentic-coding-studio/comp4020-final-tavewang/commit/3929ad341d07ca188ce4e020037e911150f693de).
+These commits record the implementation; the selection conversation explains
+the change of direction.
 
-## Stack decision (ADR)
+## Sources and the definition of good
 
-**Unchanged from the Fridge Rescue build: Node 24 (built-in `node:sqlite`) +
-Hono, no bundler, no ORM.** The pivot changed the application, not this
-question, so the reasoning is restated rather than re-derived:
+The [ANU Give It Forward project](https://mccuskerinstitute.anu.edu.au/project/give-it-forward-circular-giving-in-residential-halls/)
+provided a local basis for the problem: usable possessions are discarded at
+move-out time. Its discussion of convenience helps motivate investigating
+handover effort. It does not identify scheduling as the principal cause of
+waste or validate this app. That remains a design hypothesis.
 
-- `node:sqlite` over `better-sqlite3` — same synchronous API, but built into
-  the Node 24 runtime `mise.toml` already pins, verified directly in this
-  repo with no flag required, so the Docker image needs no compiler
-  toolchain. `fly.toml` fixes one machine and `--ha=false`, so there's exactly
-  one process and one DB file.
-- Hono (`hono` + `@hono/node-server`) for routing, cookies, and
-  auto-escaping HTML — the only "framework" dependency.
-- No client-side framework; server-rendered forms are keyboard-operable and
-  work with JavaScript off.
-- Node 24.21 runs `.ts` files directly (verified again, same as before), so
-  the Dockerfile still has nothing to compile.
+Two references were added during this documentation review, after implementation:
+Robin Sloan's [*An app can be a home-cooked meal*](https://www.robinsloan.com/notes/home-cooked-app/)
+helps explain the value of serving a small group, and Aurora Harley's
+[*Visibility of System Status*](https://www.nngroup.com/articles/visibility-system-status/)
+provides a rationale for distinguishing interest from a confirmed arrangement.
+Their application to MoveOut is an interpretation, not evidence of measured
+benefits.
 
-**New for this app:**
+The revised README connects these ideas to specific promises: understandable
+states, exclusive reservations, clear next actions and retained outcomes.
+`CLAUDE.md` carries implementation rules; `spec/` checks selected invariants.
+Whether people understand the labels or need fewer messages requires a user
+trial, which has not been documented.
 
-- **Timezone handling** (`src/tz.ts`): the brief requires a declared,
-  displayed timezone (default `Australia/Sydney`) with correct deadline/
-  timeslot comparisons against real time. Rejected pulling in a date library
-  for this — Node's `Intl.DateTimeFormat` already carries full IANA tz data,
-  and the wall-clock↔UTC conversion is a well-known ~20-line technique (ask
-  `Intl` what a UTC guess renders as in the target zone, correct by the
-  difference). Verified directly against both a DST and non-DST date for
-  `Australia/Sydney` before building the rest of the app on top of it.
-- **Photo upload** (`src/uploads.ts`): the brief allows dropping this if the
-  environment fights it. Verified first, in isolation, that Node's built-in
-  `Request.formData()` (via `@hono/node-server`) parses a real
-  `multipart/form-data` upload into a `File` with a working
-  `.arrayBuffer()` — it does, so no upload dependency (e.g. `multer`) was
-  needed. Validates MIME type (JPEG/PNG/WebP only) and a 5 MB cap before
-  writing under `DATA_DIR/uploads/`, serving it back through a route that
-  only ever reads a generated, pattern-matched filename (no path traversal
-  surface from user input).
-- **Two status columns, enforced by schema**: a partial unique index
-  (`applications(item_id, claimer_device_id) WHERE status IN ('pending',
-  'confirmed')`) makes "at most one active request per device per item" a
-  database guarantee rather than an application-level check — verified
-  directly that a second active insert is rejected and that re-applying
-  after a cancellation is allowed.
+## Stack choice and its costs
 
-## Concurrency and the state machine
+The Node, Hono and SQLite scaffold originated in
+[9cda16a](https://github.com/comp4020-agentic-coding-studio/comp4020-final-tavewang/commit/9cda16a3293dbdca1ff3136df34d8ee65a4c18f0)
+and was retained through the pivot. The repository pins Node 24 and uses its
+built-in `node:sqlite`, avoiding a separate database service and native addon
+build. Hono handles routing and HTML responses. Server-rendered forms keep the
+first version small and usable without client-side JavaScript.
 
-Every transition is a single guarded `UPDATE ... WHERE id = ? AND status =
-'<required state>'`, wrapped (with its paired item/application update) in a
-transaction for atomicity. This is the same answer as Fridge Rescue's claim
-race, applied to a two-table state machine instead of one: confirming an
-application only succeeds if the item's `status = 'open' → 'reserved'` update
-also lands a row, so two confirmations racing on two different pending
-requests for the same item resolve to exactly one winner — verified with a
-real concurrent `Promise.all` test, not just by argument.
+For the first version, retaining this stack keeps the main effort on the
+handover rules. It fits the course's single-machine deployment and keeps
+SQLite and uploaded photos together under `DATA_DIR`, with no separate
+database service to operate. The trade-off is synchronous database work in
+the server process and a design that needs reconsideration for multiple
+machines. The simple forms are adequate for this week's workflow, but shared
+updates still require refreshing and need further work for crit 9.
 
-## What's verified, and how
+The agent implemented timezone conversion using `Intl` and multipart photo
+handling using the runtime's request APIs. This avoids extra dependencies but
+leaves conversion edge cases and upload validation as responsibilities of the
+application. Keeping dependencies small does not establish those paths are
+correct. Browser-cookie identity also reduces setup while leaving account
+recovery and cross-device access unsupported.
 
-- **Locally verified** (`pnpm typecheck`, `pnpm test`, 11 tests in
-  `spec/moveout.test.ts`): permission guards (non-creator can't manage or
-  confirm; a claimant can't cancel someone else's request); the pickup
-  location stays hidden from an unconfirmed requester; concurrent
-  confirmations resolve to exactly one; cancelling a confirmed booking
-  reopens the item for a backup request; applying past the deadline is
-  rejected; a completed record persists across repeated reads; a mover can't
-  request their own item or hold two active requests from one device;
-  withdrawing an item cancels its pending requests. Writing these tests
-  caught two real bugs before this ever reached a crit: a withdrawn item's
-  own application history was dropping off the claimant's page (fixed in
-  `src/routes/moveout.ts` by resolving against the full item list, not the
-  public withdrawn-filtered one), and a waitlisted applicant row had no
-  stable way to be addressed from outside the confirm button it doesn't
-  render (fixed by tagging every row with `data-application-id` in
-  `src/views/moveout-manage.ts`).
-- **Verified manually, scripted but real** (a Python client simulating
-  separate mover/claimant browsers, not a mocked unit test): the full
-  create → add item/timeslot → apply → confirm → view-with-location →
-  cancel → reopen → re-confirm → complete flow; photo upload end-to-end,
-  including rejecting an oversized file; restarting the local Node process
-  against the same `DATA_DIR` and confirming both a database row and an
-  uploaded photo file survived.
-- **Not yet verified against the live deployment** at the point this
-  paragraph was written — see below for what's expected to be re-run against
-  the actual `*.fly.dev` URL, including the redeploy-doesn't-lose-data check
-  this week's spec specifically calls out.
+## State rules and corrections
 
-## TODO (you)
+Items and applications have separate lifecycles. Several people can express
+interest while an item remains open. Confirming first performs a guarded
+update from `open` to `reserved`; the paired application update is wrapped
+in a transaction. The guard selects a winner, while the transaction keeps the
+two records consistent if the operation fails. The partial unique index serves
+a different purpose: preventing duplicate active applications from one
+device. It is not the rule enforcing one confirmed recipient overall.
 
-- Say why the direction changed from Fridge Rescue to MoveOut (above).
-- Once the live checks below are run, record the real result here as
-  "deployed-verified," not folded into the local result silently.
-- Record anything you changed, pushed back on, or disagreed with once you've
-  actually reviewed this version yourself — this file currently reflects the
-  agent session that produced it, not a correction you've made yet.
-- Your own view on the two-status-column design and the no-management-token
-  decision: do you agree, or would either get revisited once crit 9's
-  real-time requirement is in front of you?
+The tests added in
+[d575467](https://github.com/comp4020-agentic-coding-studio/comp4020-final-tavewang/commit/d575467753181710d2202ada0a7fd0e9b7565b30)
+include competing confirmations and cancellation followed by confirming a
+backup. These connect the definition of a reliable arrangement to checks.
+
+A consequential correction appears in
+[491a012](https://github.com/comp4020-agentic-coding-studio/comp4020-final-tavewang/commit/491a0129fbbdb9388df6a8f60d851576731f3c97).
+Its recorded deployment failure involved the old Fridge Rescue database
+surviving on the volume with an incompatible `items` table. The fix gave
+MoveOut a separate `moveout.db`, preserving the old file. This handles the
+project pivot; it is not a migration strategy for future MoveOut schema
+changes. Persistence preserves earlier assumptions as well as useful records.
+
+[c819237](https://github.com/comp4020-agentic-coding-studio/comp4020-final-tavewang/commit/c819237d703794290178657e5a5ed8b3e0f48f29)
+records a live phone-viewport inspection and fixes for overflowing README
+code blocks and pickup selects. The diff corroborates the CSS changes; the
+inspection itself is described in the commit message. These fixes have not
+yet become dedicated layout regression checks. The later visual revision is
+recorded in [631cd4b](https://github.com/comp4020-agentic-coding-studio/comp4020-final-tavewang/commit/631cd4b71c7d47531d607304bdeafe9defedf002).
+
+## Verification and remaining evidence
+
+There are nine MoveOut tests plus two course invariants, eleven in total.
+They exercise selected permission guards, unconfirmed location visibility,
+competing confirmations, cancellation, expired applications, repeated reads
+of completion records, duplicate applications and withdrawal.
+
+Earlier agent-written notes report local typechecking, scripted walkthroughs,
+photo checks and restart persistence. The test commit reports an execution
+against a running app, and the mobile-fix commit records a live inspection.
+Those reports should not be collapsed into a fresh, comprehensive verification
+claim. In particular, a record surviving another HTTP read does not demonstrate
+survival across a restart or redeployment. A reproducible before/after check
+for both records and photos is still needed in this written evidence.
+
+My documentation-review requests were to expand the reflection and design
+references, then remove draft markers. The revised account records the actual
+project-selection conversation and identifies sources added after
+implementation. The review also corrected unsupported blanket claims about
+live persistence. These are writing and evidence corrections, not a new
+application test run.
+
+On 7 October 2026, read-only HTTP checks of the Fly homepage and `/readme/`
+both returned 200 and displayed MoveOut. The deployed README still contained
+the earlier sections, so publishing these local documentation changes remains
+necessary. This establishes page availability, not successful booking,
+photo persistence or survival across redeployment.
+
+Running `node scripts/check-evidence.ts` passed: the reflection filename was
+recognised and all seven cited commits resolved. `git diff --check` also
+passed. The `pnpm check:evidence` wrapper could not fetch missing dependencies;
+its underlying script was run directly. Application tests were not rerun in
+this review. A current end-to-end run and recorded restart/redeployment
+checks remain to be completed. User feedback must be recorded after an
+actual trial, and future corrections should strengthen the relevant rules
+or tests.
