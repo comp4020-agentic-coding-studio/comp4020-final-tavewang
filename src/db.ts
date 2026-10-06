@@ -58,7 +58,16 @@ mkdirSync(join(dataDir, "uploads"), { recursive: true });
 
 export const uploadsDir = join(dataDir, "uploads");
 
-export const db = new DatabaseSync(join(dataDir, "app.db"));
+// A distinct filename from Fridge Rescue's "app.db" on purpose: the Fly
+// volume is the same one that direction used (same app, same /data), and its
+// old "app.db" still has a Fridge-Rescue-shaped `items` table with no
+// `moveout_id` column. `CREATE TABLE IF NOT EXISTS` would silently keep that
+// incompatible table rather than fail loudly, so MoveOut gets its own file
+// instead of attempting a migration of data that belonged to a different,
+// abandoned application. Discovered as a crash on the first post-pivot
+// deploy (see PROCESS.md) and fixed this way rather than hand-editing the
+// live volume.
+export const db = new DatabaseSync(join(dataDir, "moveout.db"));
 db.exec("PRAGMA journal_mode = WAL;");
 db.exec("PRAGMA foreign_keys = ON;");
 
