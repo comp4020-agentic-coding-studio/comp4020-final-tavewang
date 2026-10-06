@@ -96,6 +96,8 @@ input[type="datetime-local"],
 input[type="file"],
 select,
 input:not([type]) {
+  width: 100%;
+  max-width: 100%;
   padding: 0.55rem 0.6rem;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -312,6 +314,38 @@ section form > button[type="submit"] {
   max-width: 680px;
   margin: 0 auto;
   padding: 2rem 1.25rem 4rem;
+}
+
+/* A fenced code block (e.g. README's "Running it") is `white-space: pre` by
+   default, which doesn't wrap — without an explicit width/scroll rule a long
+   line forces the whole page wider than the viewport on a phone. Scrolling
+   the block itself, rather than the page, is the fix. */
+.readme pre {
+  overflow-x: auto;
+  max-width: 100%;
+  padding: 0.85rem 1rem;
+  background: var(--pending-bg);
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+
+.readme code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.readme pre code {
+  background: none;
+  padding: 0;
+}
+
+.readme :not(pre) > code {
+  background: var(--pending-bg);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+}
+
+.readme img {
+  max-width: 100%;
 }
 
 @media (max-width: 480px) {
