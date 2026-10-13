@@ -169,3 +169,41 @@ it("withdrawing an open item cancels its pending requests and removes it from th
   const publicPage = await (await makeClient(baseUrl).get(moveout.publicUrl)).text();
   expect(publicPage).not.toContain("Desk Lamp");
 });
+
+// Regression for a bug found in crit-9 review: confirming an application
+// that's already been cancelled (e.g. a stale "Confirm" button clicked
+// after the applicant cancelled, or clicked twice) used to still flip the
+// ITEM to 'reserved' even though the application UPDATE's WHERE clause
+// correctly found no 'pending' row to match — because the two guarded
+// updates weren't both checked before the transaction committed. The fix
+// makes the item update's success conditional on the application update
+// also succeeding, inside the same all-or-nothing transaction.
+it("confirming an already-cancelled application fails without reserving the item, and a real pending request can still be confirmed", async () => {
+  const { owner, moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Stale-confirm regression test");
+  const bob = makeClient(baseUrl);
+  const carol = makeClient(baseUrl);
+  await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob" });
+  await apply(carol, moveout.moveoutId, { itemId, timeslotId, nickname: "Carol" });
+
+  const managePage1 = await (await owner.get(moveout.manageUrl)).text();
+  const bobApp = applicationIdFor(managePage1, "Bob");
+  const carolApp = applicationIdFor(managePage1, "Carol");
+
+  // Bob cancels his own still-pending request.
+  expect((await bob.post(`/applications/${bobApp}/cancel`)).status).toBe(302);
+
+  // The mover's page is stale (still shows Bob as confirmable) and they
+  // click Confirm anyway — this must fail outright, not reserve the item.
+  const staleConfirm = await owner.post(`/applications/${bobApp}/confirm`);
+  expect(staleConfirm.status).toBe(409);
+
+  // The item must still be 'open': a public visitor can still see and
+  // request it, and crucially Carol's real pending request can still be
+  // confirmed — if the bug were present the item would be wrongly
+  // 'reserved' with no confirmed application, and this would 409 too.
+  const publicPage = await (await makeClient(baseUrl).get(moveout.publicUrl)).text();
+  expect(publicPage).toContain("Desk Lamp");
+
+  const carolConfirm = await owner.post(`/applications/${carolApp}/confirm`);
+  expect(carolConfirm.status).toBe(302);
+});
