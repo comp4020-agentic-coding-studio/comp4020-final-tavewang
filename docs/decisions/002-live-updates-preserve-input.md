@@ -125,9 +125,10 @@ staleness window is unbounded.
   event happens to touch this page" to apply a deferred update, which could
   in practice mean "never" on a quiet page; that gap was found during review
   and closed before this was considered done.
-- The manage page's "Withdrawn items" count does not live-update (a known,
-  accepted gap — see README and PROCESS.md); everything else in the spec's
-  "needs to stay in sync" list does.
+- The manage page keeps its withdrawn-items container rendered but hidden
+  when empty. Its count and keyed item names update live from the first
+  withdrawal onwards, without replacing the details element or changing
+  the viewer's expanded/collapsed choice.
 
 ## How this is verified
 
@@ -149,8 +150,11 @@ staleness window is unbounded.
   `compositionstart`/`compositionend` events dispatched by the script, not a
   real operating-system input method — Playwright's Chrome driver has no
   actual IME attached. This proves `src/public/live.js`'s own composition
-  guard behaves correctly for events shaped like a real IME's; it is not
-  evidence that a genuine Pinyin/Zhuyin/etc. session behaves identically.
+  protection preserves the original input node, text, focus and selection
+  while new pickup times and an unrelated withdrawal update before
+  composition ends. Only the composing element and its ancestors are
+  protected; page-wide updates never wait for composition to finish. This
+  is not evidence that a genuine Pinyin/Zhuyin/etc. session behaves identically.
   That gap is real and stated, not papered over — see PROCESS.md and
   reflections/crit-9.md for what a human would still need to check with a
   real IME enabled.

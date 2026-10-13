@@ -2,30 +2,12 @@
 
 ## The breakthrough
 
-The breakthrough was realising that "receives an SSE message" and
-"synchronises correctly" are different claims, and the first one is far
-easier to satisfy than the second. My initial instruction to the agent was
-clear about the behaviour I wanted — update shared state live, never destroy
-someone's in-progress input — and the resulting implementation passed its
-own tests and a first browser check. I asked for an adversarial review pass
-before accepting that as done, rather than stopping at green. That pass
-found five real defects a happy-path check had missed: reconciliation moving
-unrelated DOM nodes and silently stealing someone else's focus, a withdrawn
-item's form staying usable, a confirmed booking's address not actually
-reaching a protected card, a first-ever request never appearing in an
-already-open empty list, and — the one that mattered most — a stale confirm
-that could leave an item locked with no application actually holding it.
-That last one was a genuine data-integrity bug in the transaction logic, not
-a UI polish issue, and it only surfaced because I asked the review to try to
-break the thing rather than confirm it worked.
+The breakthrough was understanding that receiving a live-update message does not mean the interface has synchronised correctly. I asked Claude to implement Crit 9, then asked Codex to review the changes. That review found concrete failures: updates could steal focus, a withdrawn item's form still looked usable, and a confirmed request could show its new status without revealing the pickup address. A stale confirmation could also reserve an item without a valid recipient.
+
+I used those findings to ask for specific fixes and another review. The later checks confirmed those problems were repaired. Seeing the difference between a transport test and a browser scenario gave me a clearer way to judge progress: check what another person actually sees and can do, including when their page is out of date.
 
 ## The developer I want to become
 
-[NEEDS MY INPUT: this section should be mine to write honestly, not
-generated to sound reflective. What I can offer instead: the pattern worth
-naming is that my most useful instruction this week wasn't "add real-time
-updates," it was "now go find what's wrong with it" — a second, differently-
-aimed pass caught what the first pass's own tests couldn't see by
-construction. I don't yet know what that means for how I want to work as a
-developer; that's a genuine question for me to sit with, not one I should
-let be answered for me.]
+I want to develop useful tools whose behaviour I can explain and verify. Choosing MoveOut came from repeatedly asking whether an idea solved a real problem. This week extended that question to implementation: a feature only helps if people can rely on it while using the app together.
+
+My responsibility is to define those expectations, challenge an agent's result and turn failures into rules or tests. I also need to distinguish passing checks from complete evidence. A later review found that input-method composition delayed unrelated updates, so I requested a focused fix and regression test. I want this review-and-correction cycle to become part of my normal workflow, while keeping the limits of synthetic tests visible.

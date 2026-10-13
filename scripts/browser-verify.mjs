@@ -245,6 +245,17 @@ async function main() {
     );
 
     console.log("\n[test 3b] mover withdraws the Rug while Carol's form is still open and protected");
+    const manageObserver = await mover.newPage();
+    await manageObserver.goto(manageUrl);
+    await manageObserver.locator('#connection-status', { hasText: 'Live' }).waitFor();
+    let observerNavigations = 0;
+    manageObserver.on("framenavigated", (frame) => {
+      if (frame === manageObserver.mainFrame()) observerNavigations++;
+    });
+    const withdrawnPane = manageObserver.locator('details').filter({ has: manageObserver.locator('summary', { hasText: 'Withdrawn items' }) });
+    check("withdrawn summary starts hidden when there are no withdrawn items", await withdrawnPane.isHidden());
+    await manageObserver.locator('#itemName').fill('Unfinished item');
+    await manageObserver.locator('#itemName').evaluate((el) => el.setSelectionRange(0, 4));
     await moverPage.goto(manageUrl);
     await moverPage.locator('li[data-item-id]:has-text("Rug") form[action*="/withdraw"] button').click();
     const goneNoteShown = await waitFor(
@@ -258,6 +269,17 @@ async function main() {
     );
     const rugSubmitDisabled = await bobPage.locator('li.item-card:has-text("Rug") button[type="submit"]').isDisabled();
     check("bug fix 2: the now-invalid submit button is actually disabled (not just visually)", rugSubmitDisabled);
+
+    const firstWithdrawalVisible = await waitFor(async () =>
+      (await withdrawnPane.locator('summary').allTextContents())[0] === 'Withdrawn items (1)' &&
+      await withdrawnPane.locator('li').count() === 1 &&
+      await withdrawnPane.locator('li').textContent() === 'Rug',
+      { timeout: 1500 },
+    );
+    check("another open manage tab shows the first withdrawal and its item without reloading", firstWithdrawalVisible);
+    if (firstWithdrawalVisible) await withdrawnPane.locator('summary').click();
+    await manageObserver.locator('#itemName').focus();
+    await manageObserver.locator('#itemName').evaluate((el) => el.setSelectionRange(0, 4));
 
     console.log("\n[test 3c] Carol actually abandons her draft (clears the field) -> the deferred structural removal now applies");
     // Closing the <details> alone does NOT make this unprotected — Carol's
@@ -277,51 +299,73 @@ async function main() {
     );
     check("once Carol's draft is actually abandoned, the stale Rug card is removed (catch-up reconcile fired)", rugRemoved);
 
-    // ---- 3d: IME composition — SYNTHETIC coverage only, stated explicitly --
-    // IMPORTANT SCOPE NOTE: Chrome via Playwright's CDP driver cannot run an
-    // actual OS input-method editor (there is no real Pinyin/Zhuyin engine
-    // attached), so this dispatches synthetic `compositionstart` /
-    // `compositionend` + `input` events shaped like a real IME's — it proves
-    // live.js's own composition guard (the `composing` flag in
-    // src/public/live.js) correctly suppresses a reconcile mid-composition
-    // and catches up right after, but it is NOT evidence that a real IME
-    // session (actual candidate window, real composing text) behaves
-    // identically. That still needs a human testing with a real IME enabled
-    // at the crit, or on a real device — not claimed as covered here.
-    console.log("\n[test 3d] SYNTHETIC IME composition: an update mid-composition must not clear the in-progress text");
-    // A dedicated fresh item — by this point Lamp is reserved and Rug is
-    // withdrawn, neither has an open apply form any more.
+    // Synthetic composition events test our DOM handling, not an OS candidate window.
+    console.log("\n[test 3d] SYNTHETIC IME: other changes stay live while the input is protected");
     await moverPage.goto(manageUrl);
-    await moverPage.fill("#itemName", "Kettle");
-    await moverPage.click('form[action$="/items"] button[type="submit"]');
-    await waitFor(() => moverPage.locator('li[data-item-id]:has-text("Kettle")').isVisible().catch(() => false));
+    for (const name of ["Kettle", "IME neighbour"]) {
+      await moverPage.fill("#itemName", name);
+      await moverPage.click('form[action$="/items"] button[type="submit"]');
+      await waitFor(() => moverPage.locator(`li[data-item-id]:has-text("${name}")`).isVisible().catch(() => false));
+    }
     await bobPage.goto(publicUrl);
     const imeCard = bobPage.locator('li.item-card:has-text("Kettle")');
+    const neighbour = bobPage.locator('li[data-item-id]:has-text("IME neighbour")');
+    const neighbourId = await neighbour.getAttribute("data-item-id");
     await imeCard.locator("summary").click();
     const imeInput = imeCard.locator('input[name="nickname"]');
     await imeInput.focus();
-    await bobPage.evaluate(() => {
-      const el = document.activeElement;
+    const imeNode = await imeInput.elementHandle();
+    await imeInput.evaluate((el) => {
       el.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
       el.value = "测试";
+      el.setSelectionRange(0, 1);
       el.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true }));
     });
-    // Trigger a real server-driven resync while "composing" — mover adds a
-    // timeslot again.
-    await moverPage.goto(manageUrl);
+
     await moverPage.fill("#slotStart", futureLocalDateTime(6));
     await moverPage.fill("#slotEnd", futureLocalDateTime(7));
     await moverPage.click('form[action$="/timeslots"] button[type="submit"]');
-    await bobPage.waitForTimeout(400); // give the (suppressed) sync a chance to have wrongly fired, if it were going to
-    const valueDuringComposition = await imeInput.inputValue();
-    check("SYNTHETIC: composing text is untouched by a sync that lands mid-composition", valueDuringComposition === "测试");
-    await bobPage.evaluate(() => {
-      document.activeElement.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+    const optionsUpdatedDuringComposition = await waitFor(
+      async () => (await imeCard.locator('select[name="timeslotId"] option').count()) >= 3,
+      { timeout: 1500 },
+    );
+    check("SYNTHETIC: shared pickup times update before composition ends", optionsUpdatedDuringComposition);
+
+    const withdrawal = await mover.request.post(`${BASE_URL}/items/${neighbourId}/withdraw`, { maxRedirects: 0 });
+    check("setup: the other item was actually withdrawn", withdrawal.status() === 302);
+    const neighbourRemoved = await waitFor(() => neighbour.count().then((n) => n === 0), { timeout: 1500 });
+    check("SYNTHETIC: an unrelated withdrawn item disappears before composition ends", neighbourRemoved);
+
+    const secondWithdrawalVisible = await waitFor(async () => {
+      const titles = await withdrawnPane.locator('summary').allTextContents();
+      const names = await withdrawnPane.locator('li').allTextContents();
+      return titles[0] === 'Withdrawn items (2)' && names.length === 2 && names.includes('Rug') && names.includes('IME neighbour');
+    }, { timeout: 1500 });
+    check("the open withdrawn list updates from one item to two, including both names", secondWithdrawalVisible);
+    check("updating the withdrawn count keeps the details expanded", await withdrawnPane.evaluateAll((nodes) => nodes.length === 1 && nodes[0].open));
+    const observerDraft = await manageObserver.locator('#itemName').evaluate((el) =>
+      el.value === 'Unfinished item' && document.activeElement === el && el.selectionStart === 0 && el.selectionEnd === 4,
+    );
+    check("withdrawal updates preserve the mover's unfinished form, focus and selection", observerDraft);
+    check("the observing manage tab never navigated or reloaded", observerNavigations === 0);
+
+    const draft = await imeNode.evaluate((el) => ({
+      connected: el.isConnected,
+      focused: document.activeElement === el,
+      value: el.value,
+      start: el.selectionStart,
+      end: el.selectionEnd,
+    }));
+    check("SYNTHETIC: composing text is untouched by live updates", draft.value === "测试");
+    check("SYNTHETIC: the original input node, focus and selection survive", draft.connected && draft.focused && draft.start === 0 && draft.end === 1);
+    await imeInput.evaluate((el) => {
+      el.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
     });
-    const sharedStateStillUpdatesAfter = await waitFor(
+    const stateAfterComposition = await waitFor(
       async () => (await imeCard.locator('select[name="timeslotId"] option').count()) >= 3,
     );
-    check("SYNTHETIC: shared state (new timeslot option) still lands once composition ends — not frozen forever", sharedStateStillUpdatesAfter);
+    check("SYNTHETIC: shared state remains current after composition ends", stateAfterComposition);
+    await imeNode.dispose();
 
     // ---- 4: confirmed status + pickup address land even while protected ----
     console.log("\n[test 4] David opens 'Change pickup time' on his pending request; mover confirms it while that's open");

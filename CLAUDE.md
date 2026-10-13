@@ -150,6 +150,11 @@ currently listening."
   sub-form's controls still make sense) — see `patchSafeBits` and
   `syncApplicationStatus` — so shared state never goes stale just because
   someone's mid-form.
+- IME composition protects only the active input and its ancestors. Other
+  entities and safe shared-state updates must continue during composition;
+  never return early from page-wide resync because an input is composing.
+  Do not move its ancestor nodes until composition ends, then reconcile the
+  latest fetched state through `scheduleCatchUp`.
 - A node that isn't just changed but **gone entirely** from the server's
   current page (withdrawn, or moved from "upcoming" to "completed") and is
   still protected is never silently left looking valid: `markGone` disables
@@ -172,6 +177,9 @@ currently listening."
   list's *children* and never the section wrapping it is the bug this
   guards against: the first row ever added to an open tab updated the
   list but left the whole section invisible around it.
+- The withdrawn-items summary and keyed list must sync even when initially
+  empty. Keep the container mounted, update its count and visibility, and
+  preserve the viewer's expanded/collapsed choice and unrelated form drafts.
 - Never auto-replay a write whose outcome is unknown (a failed `fetch`,
   a dropped connection mid-request). Show the error, leave the person's input
   alone, and make *them* decide whether to resubmit — don't guess for them.

@@ -38,18 +38,15 @@
     statusEl.setAttribute("data-state", state);
   }
 
-  // ---- IME composition: never touch the DOM mid-keystroke -----------------
-  let composing = false;
-  let requeueAfterComposition = false;
-  document.addEventListener("compositionstart", () => {
-    composing = true;
+  // Protect the composing input's ancestors, not every card on the page.
+  let composingElement = null;
+  document.addEventListener("compositionstart", (event) => {
+    composingElement = event.target;
   });
-  document.addEventListener("compositionend", () => {
-    composing = false;
-    if (requeueAfterComposition) {
-      requeueAfterComposition = false;
-      resync();
-    }
+  document.addEventListener("compositionend", (event) => {
+    if (event.target !== composingElement) return;
+    composingElement = null;
+    scheduleCatchUp();
   });
 
   // ---- SSE connection, with our own backoff (not the browser's default) --
@@ -117,10 +114,6 @@
     }
     if (token !== syncToken) return;
     syncFailures = 0;
-    if (composing) {
-      requeueAfterComposition = true;
-      return;
-    }
     try {
       lastDoc = new DOMParser().parseFromString(text, "text/html");
       reconcile(lastDoc);
@@ -179,7 +172,7 @@
   // with, a <select> has moved off its first option, a file's been chosen,
   // a <details> is expanded, or focus is presently inside it.
   function isProtected(el) {
-    if (composing) return true;
+    if (composingElement && el.contains(composingElement)) return true;
     const active = document.activeElement;
     if (active && active !== document.body && el.contains(active)) return true;
     if (el.querySelector("details[open]")) return true;
@@ -402,7 +395,8 @@
         patchSafeBits(el, newEl);
       }
       const inPlace = el.parentNode === oldList && (prev ? previousSignificant(el) === prev : el === firstSignificant(oldList));
-      if (!inPlace) {
+      // Reordering an ancestor would interrupt the active composition.
+      if (!inPlace && !(composingElement && el.contains(composingElement))) {
         if (prev) prev.after(el);
         else oldList.prepend(el);
       }
@@ -435,6 +429,11 @@
       reconcileList(oldList, newDoc.querySelector('[data-live-list="' + key + '"]'));
     });
     syncSectionVisibility(newDoc);
+    const count = document.querySelector("[data-withdrawn-count]");
+    const newCount = newDoc.querySelector("[data-withdrawn-count]");
+    if (count && newCount && count.textContent !== newCount.textContent) {
+      count.textContent = newCount.textContent;
+    }
   }
 
   // ---- Progressive form enhancement ----------------------------------------

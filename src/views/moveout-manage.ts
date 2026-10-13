@@ -217,14 +217,12 @@ export async function moveoutManageView(
       </table>
     </section>
 
-    ${data.withdrawnItems.length > 0
-      ? html`
-          <details>
-            <summary>Withdrawn items (${data.withdrawnItems.length})</summary>
-            <ul class="plain-list">${data.withdrawnItems.map((i) => html`<li>${i.name}</li>`)}</ul>
-          </details>
-        `
-      : ""}
+    <details data-live-section="withdrawn-items" ${data.withdrawnItems.length === 0 ? "hidden" : ""}>
+      <summary>Withdrawn items (<span data-withdrawn-count>${data.withdrawnItems.length}</span>)</summary>
+      <ul class="plain-list" data-live-list="withdrawn-items">
+        ${data.withdrawnItems.map((i) => html`<li data-item-id="${i.id}">${i.name}</li>`)}
+      </ul>
+    </details>
 
     <script src="/live.js" data-live="/m/${moveout.id}/events"></script>
     <script>
