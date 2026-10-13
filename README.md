@@ -42,16 +42,38 @@ and little avoidable coordination.
   new decision; nobody is automatically committed to a pickup.
 - **Details and outcomes are handled carefully.** Exact pickup locations are
   withheld until confirmation. Completed handovers remain in the history.
+- **An update from someone else never costs you your own.** Shared state —
+  whether an item's still available, who's confirmed, who else has applied —
+  updates live for everyone on the page, within about a second. It never
+  does that by overwriting a form you're still filling in: if the item you
+  were requesting gets reserved while you're mid-form, you're told right
+  there, your typed name and note stay exactly as you left them, and nothing
+  gets submitted on a stale decision. See
+  [docs/decisions/002-live-updates-preserve-input.md](docs/decisions/002-live-updates-preserve-input.md)
+  for the full argument and its trade-offs.
 
 ## Scope and trade-offs
 
 The current implementation supports creating pages, photos, pickup windows,
-requests, confirmation, cancellation and completion. Changes become visible
-to other browsers after a refresh; real-time updates are the next crit's work.
+requests, confirmation, cancellation and completion, and — as of crit 9 —
+real-time updates: item status, applications, confirmations and cancellations
+reach every open session on that page within about a second, with no reload,
+over Server-Sent Events (`src/live.ts`, `src/public/live.js`). With
+JavaScript unavailable, the app still works exactly as before: a normal form
+submission, and the next page reflects it.
 
-Free local collection keeps payments, delivery, bidding and ratings outside
-this version. Existing groups can distribute the link; a campus-wide market
-and in-app chat would expand the problem beyond arranging a handover.
+Not yet live-updated: the manage page's withdrawn-items count, which still
+needs a reload to pick up — a deliberately accepted gap, not an oversight
+(see [the ADR](docs/decisions/002-live-updates-preserve-input.md)). The
+real-time transport is also single-machine: it holds connections in the
+process's own memory, which is correct for this course's one-machine Fly
+deployment and would need rework (e.g. a shared pub/sub) if the app ever ran
+on more than one instance at once.
+
+Free local collection keeps payments, delivery, bidding, ratings, in-app chat
+and an online "who's here" list outside this version. Existing groups can
+distribute the link; a campus-wide market would expand the problem beyond
+arranging a handover.
 
 Identity belongs to a browser cookie. Clearing it or changing devices loses
 access to that identity; account recovery is not implemented. Knowing a share
@@ -63,8 +85,21 @@ up to 5 MB, in JPEG, PNG or WebP format.
 
 Existing tests exercise ownership, location visibility before confirmation,
 competing confirmations, cancellation, deadlines and retained handover
-records. Repeated reads are not a restart or redeployment test; verification
-evidence and its limits are recorded in [PROCESS.md](PROCESS.md).
+records, plus a regression test for a stale-confirmation bug review found in
+the new real-time write path (confirming an already-cancelled application
+used to wrongly reserve the item; see PROCESS.md). `spec/live.test.ts` adds a
+mechanical check on the real-time claim itself: it measures, rather than
+assumes, the delay between a write (an application, a confirmation) and the
+resulting push to an open event stream, including the claimant's own
+device-scoped stream. What that kind of test can't see — whether a
+half-filled form on screen survives someone else's update, whether focus
+holds, whether a chosen photo on the mover's add-item form stays chosen — is
+checked by driving an actual browser instead (`scripts/browser-verify.mjs`,
+several independent browser identities). IME composition is checked there
+only with synthetic (script-dispatched) composition events, not a real
+input-method editor — see the ADR and PROCESS.md for that boundary. Repeated
+reads are not a restart or redeployment test; verification evidence and its
+limits are recorded in [PROCESS.md](PROCESS.md).
 
 Human evaluation should ask a new recipient to request and cancel an item,
 then explain its status without coaching. A mover should identify their next

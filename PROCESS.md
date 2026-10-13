@@ -142,3 +142,124 @@ this review. A current end-to-end run and recorded restart/redeployment
 checks remain to be completed. User feedback must be recorded after an
 actual trial, and future corrections should strengthen the relevant rules
 or tests.
+
+## Crit 9: making it real-time, directing the agent, and a review pass
+
+The crit 9 brief asked for one thing beyond "make it real-time": pick one
+behaviour for several people using the app at once, write it down, and
+accept the crit pod arguing for a different option. My instruction to the
+agent was that shared state (who's confirmed, what's still available) had to
+update live, but it must never destroy input someone else was still typing —
+the scenario I gave it was literally "person A is filling in a request when
+person B gets confirmed for the same item; what does A's screen do." That
+instruction became
+[docs/decisions/002-live-updates-preserve-input.md](docs/decisions/002-live-updates-preserve-input.md),
+and drove the whole implementation shape: Server-Sent Events carrying no
+data (`src/live.ts`), a client (`src/public/live.js`) that re-fetches the
+page it already had permission to see and reconciles the DOM by stable
+item/application ids, protecting anything the viewer is actively editing.
+
+### What the first implementation got wrong
+
+I asked for a second, adversarial pass — not "does it work," but "find the
+cases where it doesn't" — before calling crit 9 done, and ran the resulting
+browser script myself rather than taking a first green run at face value.
+That pass found five real defects in the first implementation, all now
+fixed and covered by a test:
+
+1. **Reconciliation moved every DOM node on every sync, even ones that
+   hadn't changed position.** An *unrelated* change anywhere in a list (the
+   mover adding a timeslot) silently dropped a different person's focus
+   from a field they were still typing in, because moving a node's DOM
+   position always clears its focus. Fixed by only repositioning a node
+   when it's actually out of place relative to the freshly-fetched order.
+2. **A withdrawn item's still-open request form kept looking usable.** If
+   the person had unsaved input in it (so it was "protected" and not
+   removed outright), the card just sat there with a live Submit button and
+   no indication the item was gone. Fixed with an explicit `markGone` state
+   — every control disabled, a stated reason — plus a catch-up reconcile
+   that finally removes the card once the person actually stops editing it
+   (closes the form, clears the field), rather than only on the next
+   unrelated SSE push, which could in practice mean never.
+3. **A confirmed application's card showed the new status text but not the
+   pickup address**, and its now-pointless "change pickup time" control
+   stayed enabled. Status-badge text was the only thing the old code
+   treated as safe to patch on a protected card; the address and control
+   validity are equally read-only and equally safe, and weren't being
+   synced.
+4. **The very first item appearing in an already-open, previously-empty
+   list never showed up.** `home.ts`'s "Your requests" section is wrapped
+   in `<section hidden>` when empty, and the client only ever reconciled a
+   list's *children* — never the `hidden` attribute on the section around
+   it. A request arriving while that tab sat open updated the (invisible)
+   `<ul>` and nothing else.
+5. **Confirming an application that had just been cancelled corrupted
+   state.** The confirm route's transaction checked whether the *item*
+   update changed a row, but returned the *application* update's row count
+   as the overall result without checking it — so a stale confirm (page not
+   yet refreshed, or a double click) could flip the item to `reserved` with
+   no confirmed application pointing at it, a state nothing else recovers
+   from. This is the one correctness bug of the five, not a UI one; see
+   `CLAUDE.md`'s "Confirming is the one place two requests can race" for the
+   fix and the regression test added to `spec/moveout.test.ts`.
+
+My first version of `scripts/browser-verify.mjs` also had its own bugs that
+I'd have caught sooner with closer review: it built a `datetime-local`
+value from the UTC wall clock while the page interprets that field in
+Australia/Sydney (silently writing timeslots already in the past), asserted
+a file stayed attached to a form that has no file input, waited on
+`networkidle` against a page whose whole point is a long-lived SSE
+connection (so it always timed out rather than usefully waiting), and
+force-clicked a *disabled* button as if that proved the server rejects the
+same action — which it doesn't; the server has to be asked directly. All
+four are fixed in the current script, and are explained inline there.
+
+### Environment: a surprise unrelated to the code
+
+A large amount of this session's wall-clock time went to diagnosing the
+test runner hanging or timing out with no application-level cause: `jsdom`
+imports and `node_modules` reads were sporadically taking minutes, well
+past any reasonable I/O time. The cause was environmental, not a bug in
+this app: the repository lives under `~/Desktop/...`, which macOS syncs to
+iCloud ("Desktop & Documents"), and with the machine's disk nearly full,
+macOS was evicting local copies of `node_modules`'s thousands of small
+files and re-fetching them from iCloud on each cold read. Moving
+`node_modules` to `~/.cache/` and symlinking it back into the repo (already
+`.gitignore`d, now ignored as a plain pattern rather than a directory-only
+one so the symlink itself still matches) fixed it outright — `pnpm check`
+dropped from sometimes-never-finishing to under 3 seconds. This isn't
+project-specific knowledge worth a CLAUDE.md rule; it's recorded here only
+because the lost time is a real part of this week's account, and because
+the `.gitignore` edit it caused is a genuine, if small, tracked change.
+
+### Verification actually run this week
+
+- `pnpm check` (typecheck + `vitest run`): 15/15 tests pass, including the
+  pre-existing course invariants and the new confirm-atomicity regression
+  test, in under 3 seconds once the environment issue above was fixed.
+- `pnpm check:evidence`: passes.
+- `scripts/browser-verify.mjs`, run end-to-end against a throwaway
+  `DATA_DIR` with real Chrome via Playwright and several independent
+  browser contexts (never against production data): 24 checks, 0 failed, on
+  the run after the fixes above landed. It measures, not assumes, the delay
+  from a write to the resulting DOM update on another open page — every
+  timing in this account is a number that script printed, not a guess.
+  Measured latencies from that run: applying to confirmed-visible-on-
+  manage-page landed within the test's 1.5s budget; confirm to
+  pickup-address-visible likewise; new-request to "Your requests" appearing
+  on an already-open home page likewise. (`spec/live.test.ts`'s HTTP-level
+  timings are far smaller still — single-digit milliseconds from write to
+  SSE push — but that number is the server's own push time, not what a
+  person watching a real screen experiences; the browser script's numbers
+  are the ones that answer the brief's "about a second" for a human.)
+- IME composition is verified only with **synthetic** composition events
+  dispatched by the script (`CompositionEvent`/`InputEvent` built by hand) —
+  Playwright's Chrome has no real operating-system input method attached.
+  This proves `live.js`'s own composition guard does the right thing for
+  events shaped like a real IME's. It is **not** evidence that a genuine
+  Pinyin/Zhuyin/etc. typing session behaves identically; that still needs a
+  person testing with a real IME enabled, which I have not done and am not
+  claiming.
+- Not verified at all this week: an actual crit-room demonstration with two
+  physical devices, and a deploy to the course's Fly app (ship, not
+  started — see reflections/crit-9.md for what's left).
