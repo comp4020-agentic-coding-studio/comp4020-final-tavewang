@@ -1,9 +1,11 @@
 import { Hono, type Context } from "hono";
+import { streamSSE } from "hono/streaming";
 import { db, type Application, type Item, type Timeslot } from "../db.ts";
 import { getMoveout, isCreator, listItems, listTimeslots } from "../ownership.ts";
 import { newId } from "../ids.ts";
 import { zonedDateTimeToUtc } from "../tz.ts";
 import { saveUploadedPhoto, isUploadRejection } from "../uploads.ts";
+import { notifyDevice, notifyMoveout, onMoveoutChange, pumpSSE } from "../live.ts";
 import { moveoutPublicView, moveoutNotFoundView } from "../views/moveout-public.ts";
 import { moveoutManageView, type OpenItemEntry, type UpcomingEntry, type CompletedEntry } from "../views/moveout-manage.ts";
 
@@ -125,6 +127,16 @@ moveoutRoutes.get("/m/:id/manage", (c) => {
   );
 });
 
+// Carries no data, just "something on this page changed" — any subscriber,
+// public visitor or creator alike, re-fetches the page they already had
+// permission to see, and that fetch re-runs the usual ownership checks. So
+// this stream needs no permission check beyond "the page exists".
+moveoutRoutes.get("/m/:id/events", (c) => {
+  const moveoutId = c.req.param("id");
+  if (!getMoveout(moveoutId)) return c.notFound();
+  return streamSSE(c, (stream) => pumpSSE(stream, (notify) => onMoveoutChange(moveoutId, notify)));
+});
+
 moveoutRoutes.post("/m/:id/items", async (c) => {
   const moveout = getMoveout(c.req.param("id"));
   if (!moveout) return c.notFound();
@@ -146,6 +158,7 @@ moveoutRoutes.post("/m/:id/items", async (c) => {
      VALUES (?, ?, ?, ?, ?, ?)`,
   ).run(newId(), moveout.id, name, photoResult, conditionNotes, additionalNotes);
 
+  notifyMoveout(moveout.id);
   return c.redirect(`/m/${moveout.id}/manage`);
 });
 
@@ -170,6 +183,7 @@ moveoutRoutes.post("/m/:id/timeslots", async (c) => {
     endsAt.toISOString(),
   );
 
+  notifyMoveout(moveout.id);
   return c.redirect(`/m/${moveout.id}/manage`);
 });
 
@@ -215,5 +229,7 @@ moveoutRoutes.post("/m/:id/apply", async (c) => {
     return c.text("You already have a request in for this item.", 409);
   }
 
+  notifyMoveout(moveout.id);
+  notifyDevice(deviceId);
   return c.redirect(`/m/${moveout.id}`);
 });

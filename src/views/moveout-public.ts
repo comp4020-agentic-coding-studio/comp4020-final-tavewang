@@ -14,13 +14,13 @@ function timeslotLabel(slot: Timeslot, timezone: string): string {
 function myRequestCard(app: Application, item: Item, moveout: Moveout, validSlots: Timeslot[]) {
   const label = applicationStatusLabel(app);
   return html`
-    <li class="item-card tone-${app.status === "confirmed" ? "active" : app.status === "pending" ? "pending" : "closed"}">
+    <li class="item-card tone-${app.status === "confirmed" ? "active" : app.status === "pending" ? "pending" : "closed"}" data-application-id="${app.id}" data-application-status="${app.status}">
       <div class="item-main">
         <p class="item-name">${item.name}</p>
         <p class="item-badge">${label}</p>
         ${app.note ? html`<p class="item-meta">Your note: ${app.note}</p>` : ""}
         ${app.status === "confirmed"
-          ? html`<p class="item-meta"><strong>Pickup spot:</strong> ${moveout.pickup_location}</p>`
+          ? html`<p class="item-meta" data-pickup-spot><strong>Pickup spot:</strong> ${moveout.pickup_location}</p>`
           : ""}
       </div>
       <div class="item-actions">
@@ -28,7 +28,7 @@ function myRequestCard(app: Application, item: Item, moveout: Moveout, validSlot
           ? html`
               <details class="edit-details">
                 <summary>Change pickup time</summary>
-                <form method="post" action="/applications/${app.id}/timeslot" class="stacked-form">
+                <form method="post" action="/applications/${app.id}/timeslot" class="stacked-form" data-ajax>
                   <div class="field">
                     <label for="slot-${app.id}">New time</label>
                     <select id="slot-${app.id}" name="timeslotId" required>
@@ -44,7 +44,7 @@ function myRequestCard(app: Application, item: Item, moveout: Moveout, validSlot
           : ""}
         ${app.status === "pending" || app.status === "confirmed"
           ? html`
-              <form method="post" action="/applications/${app.id}/cancel" class="inline-form">
+              <form method="post" action="/applications/${app.id}/cancel" class="inline-form" data-ajax>
                 <button type="submit">Cancel</button>
               </form>
             `
@@ -61,7 +61,7 @@ function applyForm(item: Item, moveoutId: string, validSlots: Timeslot[], timezo
   return html`
     <details class="edit-details">
       <summary>Request this</summary>
-      <form method="post" action="/m/${moveoutId}/apply" class="stacked-form">
+      <form method="post" action="/m/${moveoutId}/apply" class="stacked-form" data-ajax>
         <input type="hidden" name="itemId" value="${item.id}" />
         <div class="field">
           <label for="nickname-${item.id}">Your name</label>
@@ -86,7 +86,7 @@ function applyForm(item: Item, moveoutId: string, validSlots: Timeslot[], timezo
 function itemCard(item: Item, moveoutId: string, validSlots: Timeslot[], timezone: string, alreadyRequested: boolean) {
   const tone = item.status === "open" ? "pending" : item.status === "reserved" ? "active" : "done";
   return html`
-    <li class="item-card tone-${tone}">
+    <li class="item-card tone-${tone}" data-item-id="${item.id}" data-item-status="${item.status}">
       <div class="item-main">
         ${item.photo_path ? html`<img class="item-photo" src="/${item.photo_path}" alt="" />` : ""}
         <p class="item-name">${item.name}</p>
@@ -105,6 +105,16 @@ function itemCard(item: Item, moveoutId: string, validSlots: Timeslot[], timezon
   `;
 }
 
+// Reconciliation (live.js) keeps this item-list in sync by diffing
+// data-item-id/data-application-id entries, including the empty<->nonempty
+// transition — so the empty state has to be a list entry too (a
+// `data-placeholder` <li>), not a separate <p>, or the live path would have
+// nothing to replace it with when the first item appears, or add back when
+// the last one is withdrawn, while someone's passively watching this page.
+function emptyPlaceholder(message: string) {
+  return html`<li class="empty" data-placeholder>${message}</li>`;
+}
+
 export async function moveoutPublicView(
   moveout: Moveout,
   items: Item[],
@@ -114,30 +124,31 @@ export async function moveoutPublicView(
 ): Promise<string> {
   const body = html`
     <h1>${moveout.title}</h1>
+    <p id="connection-status" class="conn-status" role="status" aria-live="polite" hidden></p>
     <p class="lede">
       ${moveout.area} · Everything must be collected by
       <strong>${formatInZone(moveout.deadline_at, moveout.timezone)}</strong>
     </p>
 
-    ${myApplications.length > 0
-      ? html`
-          <section>
-            <h2>Your requests</h2>
-            <ul class="item-list">
-              ${myApplications.map(({ app, item }) => myRequestCard(app, item, moveout, validSlots))}
-            </ul>
-          </section>
-        `
-      : ""}
+    <section data-live-section="my-requests" ${myApplications.length === 0 ? "hidden" : ""}>
+      <h2>Your requests</h2>
+      <ul class="item-list" data-live-list="my-requests">
+        ${myApplications.length === 0
+          ? emptyPlaceholder("")
+          : myApplications.map(({ app, item }) => myRequestCard(app, item, moveout, validSlots))}
+      </ul>
+    </section>
 
     <section>
       <h2>What's available</h2>
-      ${items.length === 0
-        ? html`<p class="empty">Nothing posted yet — check back later.</p>`
-        : html`<ul class="item-list">
-            ${items.map((item) => itemCard(item, moveout.id, validSlots, moveout.timezone, requestedItemIds.has(item.id)))}
-          </ul>`}
+      <ul class="item-list" data-live-list="public-items">
+        ${items.length === 0
+          ? emptyPlaceholder("Nothing posted yet — check back later.")
+          : items.map((item) => itemCard(item, moveout.id, validSlots, moveout.timezone, requestedItemIds.has(item.id)))}
+      </ul>
     </section>
+
+    <script src="/live.js" data-live="/m/${moveout.id}/events"></script>
   `;
   return layout(moveout.title, body);
 }

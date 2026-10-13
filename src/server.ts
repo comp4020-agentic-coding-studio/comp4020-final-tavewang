@@ -20,6 +20,9 @@ app.use("*", deviceMiddleware);
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 app.get("/styles.css", (c) => c.body(styles, 200, { "Content-Type": "text/css; charset=utf-8" }));
 
+const liveScript = readFileSync(new URL("./public/live.js", import.meta.url), "utf8");
+app.get("/live.js", (c) => c.body(liveScript, 200, { "Content-Type": "text/javascript; charset=utf-8" }));
+
 app.get("/uploads/:name", async (c) => {
   const name = c.req.param("name");
   if (!SAFE_UPLOAD_NAME.test(name)) return c.notFound();

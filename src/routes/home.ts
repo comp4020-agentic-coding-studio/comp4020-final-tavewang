@@ -1,11 +1,22 @@
 import { Hono } from "hono";
+import { streamSSE } from "hono/streaming";
 import { db } from "../db.ts";
 import { newMoveoutId } from "../ids.ts";
 import { zonedDateTimeToUtc, isValidTimeZone } from "../tz.ts";
 import { listApplicationsWithContext, listMoveoutsCreatedBy } from "../ownership.ts";
+import { notifyDevice, onDeviceChange, pumpSSE } from "../live.ts";
 import { homeView } from "../views/home.ts";
 
 export const homeRoutes = new Hono();
+
+// Device-scoped, not moveout-scoped: the home page's "your requests" summary
+// spans every move-out this browser has touched. `deviceId` comes from the
+// cookie (src/session.ts), never from anything the client sends, so a
+// visitor can only ever subscribe to their own updates.
+homeRoutes.get("/events", (c) => {
+  const deviceId = c.get("deviceId");
+  return streamSSE(c, (stream) => pumpSSE(stream, (notify) => onDeviceChange(deviceId, notify)));
+});
 
 homeRoutes.get("/", (c) => {
   const deviceId = c.get("deviceId");
@@ -44,5 +55,8 @@ homeRoutes.post("/moveouts", async (c) => {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(id, title, area, pickupLocation, deadlineAt.toISOString(), timezone, deviceId, nickname);
 
+  // So another already-open tab on this same device (its home page's
+  // "Your move-out pages" list) picks this up without a manual reload.
+  notifyDevice(deviceId);
   return c.redirect(`/m/${id}/manage`);
 });

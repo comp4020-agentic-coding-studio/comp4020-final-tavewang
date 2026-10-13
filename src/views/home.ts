@@ -11,39 +11,36 @@ export async function homeView(
 ): Promise<string> {
   const body = html`
     <h1>MoveOut</h1>
+    <p id="connection-status" class="conn-status" role="status" aria-live="polite" hidden></p>
     <p class="lede">
       Moving out and giving things away? Set a deadline, list what's free, and
       let people request a pickup time — without a group chat losing track of
       who's actually coming.
     </p>
     ${opts.error ? html`<p class="error" role="alert">${opts.error}</p>` : ""}
-    ${myMoveouts.length > 0
-      ? html`
-          <section>
-            <h2>Your move-out pages</h2>
-            <ul class="plain-list">
-              ${myMoveouts.map((m) => html`<li><a href="/m/${m.id}/manage">${m.title}</a></li>`)}
-            </ul>
-          </section>
-        `
-      : ""}
-    ${myApplications.length > 0
-      ? html`
-          <section>
-            <h2>Your requests</h2>
-            <ul class="plain-list">
-              ${myApplications.map(
-                (a) => html`
-                  <li>
-                    <a href="/m/${a.moveout_id}">${a.item_name}</a>
-                    <span class="muted">— ${a.moveout_title} · ${applicationStatusLabel(a)}</span>
-                  </li>
-                `,
-              )}
-            </ul>
-          </section>
-        `
-      : ""}
+    <section data-live-section="my-moveouts" ${myMoveouts.length === 0 ? "hidden" : ""}>
+      <h2>Your move-out pages</h2>
+      <ul class="plain-list" data-live-list="my-moveouts">
+        ${myMoveouts.length === 0
+          ? html`<li data-placeholder></li>`
+          : myMoveouts.map((m) => html`<li data-moveout-id="${m.id}"><a href="/m/${m.id}/manage">${m.title}</a></li>`)}
+      </ul>
+    </section>
+    <section data-live-section="home-requests" ${myApplications.length === 0 ? "hidden" : ""}>
+      <h2>Your requests</h2>
+      <ul class="plain-list" data-live-list="home-requests">
+        ${myApplications.length === 0
+          ? html`<li data-placeholder></li>`
+          : myApplications.map(
+              (a) => html`
+                <li data-application-id="${a.id}">
+                  <a href="/m/${a.moveout_id}">${a.item_name}</a>
+                  <span class="muted">— ${a.moveout_title} · ${applicationStatusLabel(a)}</span>
+                </li>
+              `,
+            )}
+      </ul>
+    </section>
     <section>
       <h2>Start a move-out page</h2>
       <form method="post" action="/moveouts" class="stacked-form">
@@ -74,6 +71,8 @@ export async function homeView(
         <button type="submit">Create move-out page</button>
       </form>
     </section>
+
+    <script src="/live.js" data-live="/events"></script>
   `;
   return layout("Home", body);
 }

@@ -40,7 +40,7 @@ function pendingRow(entry: PendingEntry, timezone: string, withConfirm: boolean)
         ? entry.timeslotHasPassed
           ? html`<span class="error-inline">Their timeslot has passed — ask them to pick a new one.</span>`
           : html`
-              <form method="post" action="/applications/${entry.app.id}/confirm" class="inline-form">
+              <form method="post" action="/applications/${entry.app.id}/confirm" class="inline-form" data-ajax>
                 <button type="submit" class="primary">Confirm</button>
               </form>
             `
@@ -51,7 +51,7 @@ function pendingRow(entry: PendingEntry, timezone: string, withConfirm: boolean)
 
 function openItemCard(entry: OpenItemEntry, timezone: string) {
   return html`
-    <li class="item-card tone-pending">
+    <li class="item-card tone-pending" data-item-id="${entry.item.id}" data-item-status="${entry.item.status}">
       <div class="item-main">
         ${entry.item.photo_path ? html`<img class="item-photo" src="/${entry.item.photo_path}" alt="" />` : ""}
         <p class="item-name">${entry.item.name}</p>
@@ -61,7 +61,7 @@ function openItemCard(entry: OpenItemEntry, timezone: string) {
           : html`<ul class="applicant-list">${entry.pending.map((p) => pendingRow(p, timezone, true))}</ul>`}
       </div>
       <div class="item-actions">
-        <form method="post" action="/items/${entry.item.id}/withdraw" class="inline-form">
+        <form method="post" action="/items/${entry.item.id}/withdraw" class="inline-form" data-ajax>
           <button type="submit">Withdraw</button>
         </form>
       </div>
@@ -71,7 +71,7 @@ function openItemCard(entry: OpenItemEntry, timezone: string) {
 
 function upcomingCard(entry: UpcomingEntry, timezone: string) {
   return html`
-    <li class="item-card tone-active">
+    <li class="item-card tone-active" data-application-id="${entry.app.id}">
       <div class="item-main">
         <p class="item-name">${entry.item.name}</p>
         <p class="item-meta">${entry.app.claimer_nickname} · ${slotLabel(entry.timeslot, timezone)}</p>
@@ -82,12 +82,12 @@ function upcomingCard(entry: UpcomingEntry, timezone: string) {
           : ""}
       </div>
       <div class="item-actions">
-        <form method="post" action="/applications/${entry.app.id}/complete" class="inline-form">
+        <form method="post" action="/applications/${entry.app.id}/complete" class="inline-form" data-ajax>
           <button type="submit" class="primary">Mark picked up</button>
         </form>
         <details class="edit-details">
           <summary>Cancel</summary>
-          <form method="post" action="/applications/${entry.app.id}/cancel" class="stacked-form">
+          <form method="post" action="/applications/${entry.app.id}/cancel" class="stacked-form" data-ajax>
             <div class="field">
               <label for="reason-${entry.app.id}">Reason (shown to ${entry.app.claimer_nickname})</label>
               <input id="reason-${entry.app.id}" name="reason" required maxlength="200" />
@@ -102,13 +102,21 @@ function upcomingCard(entry: UpcomingEntry, timezone: string) {
 
 function completedRow(entry: CompletedEntry, timezone: string) {
   return html`
-    <tr>
+    <tr data-application-id="${entry.app.id}">
       <td>${entry.item.name}</td>
       <td>${entry.app.claimer_nickname}</td>
       <td>${slotLabel(entry.timeslot, timezone)}</td>
       <td>${entry.app.completed_at ?? ""}</td>
     </tr>
   `;
+}
+
+function emptyRow(colspan: number, message: string) {
+  return html`<tr data-placeholder><td colspan="${colspan}" class="empty">${message}</td></tr>`;
+}
+
+function emptyItem(message: string) {
+  return html`<li class="empty" data-placeholder>${message}</li>`;
 }
 
 export async function moveoutManageView(
@@ -125,6 +133,7 @@ export async function moveoutManageView(
   const tz = moveout.timezone;
   const body = html`
     <h1>${moveout.title}</h1>
+    <p id="connection-status" class="conn-status" role="status" aria-live="polite" hidden></p>
     <p class="lede">
       ${moveout.area} · Pickup at <strong>${moveout.pickup_location}</strong> · Deadline
       <strong>${formatInZone(moveout.deadline_at, tz)}</strong>
@@ -141,7 +150,7 @@ export async function moveoutManageView(
 
     <section>
       <h2>Add an item</h2>
-      <form method="post" action="/m/${moveout.id}/items" enctype="multipart/form-data" class="stacked-form">
+      <form method="post" action="/m/${moveout.id}/items" enctype="multipart/form-data" class="stacked-form" data-ajax>
         <div class="field">
           <label for="itemName">Name</label>
           <input id="itemName" name="name" required maxlength="80" placeholder="e.g. Desk lamp" />
@@ -164,7 +173,7 @@ export async function moveoutManageView(
 
     <section>
       <h2>Add a pickup time</h2>
-      <form method="post" action="/m/${moveout.id}/timeslots" class="stacked-form">
+      <form method="post" action="/m/${moveout.id}/timeslots" class="stacked-form" data-ajax>
         <div class="field">
           <label for="slotStart">Starts</label>
           <input id="slotStart" name="startsAt" type="datetime-local" required />
@@ -184,28 +193,28 @@ export async function moveoutManageView(
 
     <section>
       <h2>Not yet arranged</h2>
-      ${data.openItems.length === 0
-        ? html`<p class="empty">Nothing open right now.</p>`
-        : html`<ul class="item-list">${data.openItems.map((e) => openItemCard(e, tz))}</ul>`}
+      <ul class="item-list" data-live-list="open-items">
+        ${data.openItems.length === 0 ? emptyItem("Nothing open right now.") : data.openItems.map((e) => openItemCard(e, tz))}
+      </ul>
     </section>
 
     <section>
       <h2>Upcoming hand-offs</h2>
-      ${data.upcoming.length === 0
-        ? html`<p class="empty">Nothing confirmed yet.</p>`
-        : html`<ul class="item-list">${data.upcoming.map((e) => upcomingCard(e, tz))}</ul>`}
+      <ul class="item-list" data-live-list="upcoming">
+        ${data.upcoming.length === 0 ? emptyItem("Nothing confirmed yet.") : data.upcoming.map((e) => upcomingCard(e, tz))}
+      </ul>
     </section>
 
     <section>
       <h2>Completed</h2>
-      ${data.completed.length === 0
-        ? html`<p class="empty">Nothing handed over yet.</p>`
-        : html`<table class="history-table">
-            <thead>
-              <tr><th scope="col">Item</th><th scope="col">Picked up by</th><th scope="col">Timeslot</th><th scope="col">When</th></tr>
-            </thead>
-            <tbody>${data.completed.map((e) => completedRow(e, tz))}</tbody>
-          </table>`}
+      <table class="history-table">
+        <thead>
+          <tr><th scope="col">Item</th><th scope="col">Picked up by</th><th scope="col">Timeslot</th><th scope="col">When</th></tr>
+        </thead>
+        <tbody data-live-list="completed">
+          ${data.completed.length === 0 ? emptyRow(4, "Nothing handed over yet.") : data.completed.map((e) => completedRow(e, tz))}
+        </tbody>
+      </table>
     </section>
 
     ${data.withdrawnItems.length > 0
@@ -217,6 +226,7 @@ export async function moveoutManageView(
         `
       : ""}
 
+    <script src="/live.js" data-live="/m/${moveout.id}/events"></script>
     <script>
       document.querySelectorAll("[data-copy]").forEach(function (btn) {
         btn.addEventListener("click", function () {

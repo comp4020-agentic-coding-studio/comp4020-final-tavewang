@@ -488,6 +488,25 @@ section form > button[type="submit"]:hover {
   font-style: italic;
 }
 
+/* Text-first by design (CLAUDE.md: status is never colour alone) — the
+   colour is a hint, the words are the actual message. */
+.conn-status {
+  display: inline-block;
+  margin: 0 0 0.75rem;
+  padding: 0.2rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  background: var(--pending-bg);
+  color: var(--pending);
+}
+
+.conn-status[data-state="reconnecting"],
+.conn-status[data-state="error"] {
+  background: var(--active-bg);
+  color: var(--active);
+}
+
 .readme {
   max-width: 660px;
   margin: 0 auto;
