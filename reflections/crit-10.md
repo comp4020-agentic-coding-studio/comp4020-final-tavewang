@@ -1,0 +1,9 @@
+# Crit 10 reflection — Fly by instruments
+
+**What was the breakthrough that moved the work forward?**
+
+The breakthrough was realising "tell people apart" and "log what happened" are two different obligations, and conflating them is why I'd been treating logging as an afterthought. Having Codex re-verify the existing permission model first, rather than assuming last week's work covered this brief, turned up that the gap wasn't security: every write route already checked the server-side device id correctly. The gap was that nothing recorded those checks happening — a correct but silent permission system can't be narrated from logs, which is exactly what "I only watch the logs" tests for. Separating "is this allowed" from "can I explain it afterwards" made the log simpler to design: resolve the actor the way every route already does, hash it so the log can't become a second credential, and make success conditional on the write committing. [Reviewer note: I haven't yet watched a classmate hit a denied action live and confirmed I can read the line correctly aloud — still to happen at the crit, and I'll flag it there if it goes wrong.]
+
+**What did this work change about who I want to be as a software developer?**
+
+I want to treat "it works" and "I can prove it to someone who isn't me" as separate deliverables, not sequential ones the second of which gets skipped under time pressure. Writing the log meant going back through routes I'd called finished and asking, for each: if this gets rejected, does anything say so? The honest answer was no. That's uncomfortable about my own default — I ship the happy path convincingly and leave the failure path for the implementation to handle quietly, not mine to make legible. [Reviewer note: this is my own read of the week, not tutor or classmate feedback — I want to sit with it rather than have it drafted away.]
