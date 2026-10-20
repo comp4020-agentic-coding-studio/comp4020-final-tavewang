@@ -12,9 +12,9 @@ not a quiet exception here.
   field for who someone is — always resolve identity from that cookie.
 - A move-out page's creator is `moveouts.creator_device_id`, set once at
   creation. Every creator-only action (add item, add timeslot, withdraw,
-  confirm, complete, creator-initiated cancel) checks the requester's device
-  against *that specific page's* value — never a different page's, never a
-  value the client sent.
+  confirm, complete, creator-initiated cancel, change visibility) checks the
+  requester's device against *that specific page's* value — never a
+  different page's, never a value the client sent.
 - There is **no separate management token**, on purpose: the brief requires
   the share link to never double as management auth, so the simplest way to
   guarantee that is to not have a second secret at all. `/m/:id` is the only
@@ -26,6 +26,54 @@ not a quiet exception here.
 - A nickname is display text only, never an identity key. The same nickname
   from two different devices is two different people — identity is always
   `(entity, device_id)`, never nickname.
+
+## Public browse pool (crit 11)
+
+- `moveouts.visibility` (`public` / `unlisted`) is a separate concern from
+  the creator/claimant ownership model above — it answers "can a stranger
+  *find* this page," not "can they manage it." A page's own link always
+  works at either setting; only Browse's pool and search are gated by it.
+  See [ADR 004](docs/decisions/004-public-browse-visibility.md).
+- Every pre-Crit-11 move-out page migrated to `unlisted` (`src/db.ts`), never
+  `public` — a page created before this flag existed must never become more
+  exposed than its creator agreed to, migration or not. Never change that
+  default without re-reading ADR 004 first.
+- `POST /m/:id/visibility` is creator-only, exactly like every other
+  management action, and server-validates the new value against the fixed
+  `'public' | 'unlisted'` set — never trust the submitted string directly
+  into a column with a `CHECK` constraint built for exactly two values.
+- `src/ownership.ts#listBrowseItems` / `#countBrowseItems` are the **only**
+  code path that may return items to an unauthenticated visitor by anything
+  other than a single move-out's own id. Their `WHERE` clause —
+  `visibility = 'public' AND status = 'open' AND deadline_at > now` — lives
+  in the SQL itself, not as a post-fetch filter in application code or the
+  browser. Any new "browse"-shaped feature (a different sort, a saved-search
+  page, anything) must go through this same query surface, never read the
+  `items`/`moveouts` tables directly and re-implement the visibility check.
+- The pool query selects only what a public card needs (name, category,
+  area, deadline, status, photo path) — never joins in `applications`,
+  never selects `pickup_location`, `claimer_nickname`, or `note`. If a future
+  card needs a new field, add it to the `SELECT` explicitly; don't widen it
+  to `SELECT *` across the join.
+- `category` is a fixed, closed set (`src/db.ts#ITEM_CATEGORIES`), validated
+  server-side (`isItemCategory`) wherever it's read from a form or a query
+  string — never trusted from a raw string, since it's also a `CHECK`
+  constraint on the column. An unrecognised category value falls back to
+  "Other" (new items) or "no category filter" (Browse's `?category=`),
+  never a 500 or a raw string reaching SQL.
+- Search matches only `items.name` and the item's own public
+  `condition_notes`/`additional_notes` — never `applications.note`, never
+  `claimer_nickname`, never `pickup_location`. If search ever needs to cover
+  a new field, check first whether that field is meant to be public at all.
+- Any write that changes whether an item should appear in the pool (added,
+  withdrawn, confirmed, a cancelled confirmation reopening it) or that
+  changes a page's visibility must call `notifyPublicPool()`
+  (`src/live.ts`) — guarded by `if (moveout.visibility === "public")` where
+  that's known, since there's no reason to wake every Browse tab for a
+  write on an unlisted page. Forgetting this call doesn't break anything
+  immediately (the next full reload still shows the truth) — it just means
+  an already-open Browse tab goes stale, which is what crit 9's whole
+  real-time apparatus (see below) exists to prevent.
 
 ## Two status columns, not one
 
@@ -186,6 +234,18 @@ currently listening."
 - Connection status (`#connection-status`) reflects what the SSE connection
   and the last resync fetch actually did, never `navigator.onLine` — a
   machine can report "online" while this app's own connection is down.
+- Browse (`GET /`) follows the exact same pattern as any other page here: a
+  third SSE bus (`notifyPublicPool`/`onPublicPoolChange`, `src/live.ts`)
+  signals "something changed," and the one subscriber (`src/public/live.js`,
+  via `data-live="/browse/events"`) re-fetches `location.href` — meaning
+  whatever `?q=`/`?category=`/`?sort=` the visitor currently has, not a
+  fixed unfiltered URL. Reconciliation (`isProtected`, `patchSafeBits`) is
+  unchanged by this: an in-progress search draft, an open `<details>`, or a
+  chosen `<select>` on the Browse grid is protected exactly like a draft
+  application form is anywhere else in the app. Don't special-case Browse's
+  reconciliation; if something about it needs different behaviour, that's a
+  sign the generic reconcile logic needs to learn a new case, not that
+  Browse needs its own separate client-side path.
 
 ## Business-action logging (crit 10)
 
@@ -239,11 +299,19 @@ Rules a route handler must follow when calling it:
 
 ## Current scope — don't quietly expand it
 
-Out of scope this crit, on purpose: payments, bidding, delivery, in-app chat,
-ratings, AI recommendations, campus identity login, a cross-page marketplace,
+Crit 11 is an explicitly authorised product-direction change (README's "what
+good means" section): MoveOut is now a public discovery pool, not only a
+link-shared tool. That authorisation is specific, though — it covers
+browsing, search, category filtering, sort, and the Public/Unlisted choice
+that gates them. It is **not** licence to add anything beyond that on the
+same "it's a marketplace now" logic.
+
+Still out of scope, on purpose: payments, bidding, delivery, in-app chat,
+comments, likes/follows, ratings, AI recommendations, campus identity login,
 email/SMS notifications, automatic backup-promotion, calendar integration,
-partial-quantity requests, an online "who's here now" presence list, and a
-pickup-capacity limit. Crit 9 adds real-time *sync* of the state that already
-exists — it is not licence to add new state. Don't add any of these as a
-"quick win" without first updating `README.md`'s "good" argument — a feature
-not argued for there isn't one the spec or the marker is looking for.
+partial-quantity requests, an online "who's here now" presence list, a
+pickup-capacity limit, user profiles beyond a nickname, and any ranking of
+results other than the two explicit sorts (newest, soonest deadline). Don't
+add any of these as a "quick win" without first updating `README.md`'s
+"good" argument — a feature not argued for there isn't one the spec or the
+marker is looking for.
