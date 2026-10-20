@@ -9,6 +9,7 @@ import {
   futureLocalDateTime,
   locationOf,
   makeClient,
+  myOwnApplicationId,
 } from "./helpers.ts";
 
 const baseUrl = inject("baseUrl");
@@ -73,21 +74,40 @@ it("someone else can't change a claimant's own pending request's timeslot", asyn
   expect((await carol.post(`/applications/${appId}/timeslot`, { timeslotId })).status).toBe(404);
 });
 
-it("two applicants with the same nickname from different devices stay isolated — neither can act on the other's request", async () => {
+it("two applicants who both actually use the nickname \"Sam\" on the SAME item stay two separate identities", async () => {
   const { owner, moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Same-nickname isolation test");
   const same1 = makeClient(baseUrl);
   const same2 = makeClient(baseUrl);
-  await apply(same1, moveout.moveoutId, { itemId, timeslotId, nickname: "Sam" });
+  // Both apply to the exact same item with the exact literal nickname "Sam"
+  // — the unique constraint is (item_id, claimer_device_id), not nickname,
+  // so this is allowed (same1 confirmable, same2 waitlisted), and it's the
+  // real same-nickname scenario the brief asks for: two people, one name.
+  expect((await apply(same1, moveout.moveoutId, { itemId, timeslotId, nickname: "Sam" })).status).toBe(302);
+  expect((await apply(same2, moveout.moveoutId, { itemId, timeslotId, nickname: "Sam" })).status).toBe(302);
 
+  // Each reads their OWN application id off their OWN "Your requests"
+  // section (keyed by data-application-id, never by the shared nickname
+  // text) — this is what makes it possible to address same1's and same2's
+  // applications separately at all despite an identical display name.
+  const same1View = await (await same1.get(moveout.publicUrl)).text();
+  const same2View = await (await same2.get(moveout.publicUrl)).text();
+  const same1AppId = myOwnApplicationId(same1View);
+  const same2AppId = myOwnApplicationId(same2View);
+  expect(same1AppId).not.toBe(same2AppId);
+
+  // same2 cannot cancel or retime same1's application, and vice versa,
+  // despite the server-rendered page showing "Sam" for both rows.
+  expect((await same2.post(`/applications/${same1AppId}/cancel`)).status).toBe(404);
+  expect((await same2.post(`/applications/${same1AppId}/timeslot`, { timeslotId })).status).toBe(404);
+  expect((await same1.post(`/applications/${same2AppId}/cancel`)).status).toBe(404);
+
+  // The owner, reading the manage page, sees two distinct applicant rows —
+  // proving the server itself (not just this test's bookkeeping) treats
+  // them as different people, even though applicationIdFor's name-based
+  // lookup can only ever reliably find the first "Sam" row.
   const managePage = await (await owner.get(moveout.manageUrl)).text();
-  // Two applicants named "Sam" would collide with applicationIdFor's regex,
-  // so only one of them applies to this item — same2 applies as a different
-  // request would, proving two different devices stay two different
-  // identities even while sharing a nickname: same2 cannot act on same1's
-  // application despite the shared display name.
-  const appId = applicationIdFor(managePage, "Sam");
-  expect((await same2.post(`/applications/${appId}/cancel`)).status).toBe(404);
-  expect((await same2.post(`/applications/${appId}/timeslot`, { timeslotId })).status).toBe(404);
+  const sameRowCount = managePage.split('<span>Sam ').length - 1;
+  expect(sameRowCount).toBe(2);
 });
 
 it("address visibility before and after confirmation, and a rejected action leaves status unchanged", async () => {

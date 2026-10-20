@@ -150,7 +150,9 @@ async function main() {
     const bobPage = await bob.newPage();
 
     console.log("\n[setup] mover creates a move-out page with two items and a timeslot");
-    await moverPage.goto(BASE_URL);
+    // Crit 11: "/" became the public Browse pool; the create-page form moved
+    // to "/mine" ("My MoveOut").
+    await moverPage.goto(`${BASE_URL}/mine`);
     await moverPage.fill("#title", "Browser-verify run");
     await moverPage.fill("#area", "Test Hall");
     await moverPage.fill("#pickupLocation", "Secret Side Door 42");
@@ -406,12 +408,12 @@ async function main() {
       .catch(() => true); // the form itself may have closed; either outcome is acceptable, only an *enabled* stale button is the bug
     check("bug fix 3: the now-meaningless 'change timeslot' control is disabled, not left actionable", timeslotBtnDisabled);
 
-    // ---- 5: empty -> non-empty list transition (home page) ------------------
-    console.log("\n[test 5] Emma opens her empty home page in one tab, applies for an item in another tab");
+    // ---- 5: empty -> non-empty list transition (My MoveOut) -----------------
+    console.log("\n[test 5] Emma opens her empty 'My MoveOut' page in one tab, applies for an item in another tab");
     const emmaCtx = await browser.newContext();
     const emmaHome = await emmaCtx.newPage();
     const emmaOther = await emmaCtx.newPage();
-    await emmaHome.goto(BASE_URL);
+    await emmaHome.goto(`${BASE_URL}/mine`);
     const noRequestsSectionHiddenInitially = await emmaHome
       .locator('section[data-live-section="home-requests"]')
       .isHidden()

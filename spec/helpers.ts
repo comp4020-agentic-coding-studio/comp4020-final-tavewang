@@ -48,7 +48,15 @@ export interface CreatedMoveout {
 
 export async function createMoveout(
   client: Client,
-  fields: { title: string; area?: string; pickupLocation?: string; deadline: string; timezone?: string; nickname: string },
+  fields: {
+    title: string;
+    area?: string;
+    pickupLocation?: string;
+    deadline: string;
+    timezone?: string;
+    nickname: string;
+    visibility?: "public" | "unlisted";
+  },
 ): Promise<CreatedMoveout> {
   const res = await client.post("/moveouts", {
     title: fields.title,
@@ -57,6 +65,7 @@ export async function createMoveout(
     deadline: fields.deadline,
     timezone: fields.timezone ?? "Australia/Sydney",
     nickname: fields.nickname,
+    visibility: fields.visibility ?? "public",
   });
   const manageUrl = locationOf(res); // /m/:id/manage
   const moveoutId = manageUrl.split("/")[2];
@@ -71,10 +80,11 @@ export async function addTimeslot(client: Client, moveoutId: string, startsAt: s
 export async function addItem(
   client: Client,
   moveoutId: string,
-  fields: { name: string; conditionNotes?: string; additionalNotes?: string },
+  fields: { name: string; category?: string; conditionNotes?: string; additionalNotes?: string },
 ): Promise<string> {
   await client.post(`/m/${moveoutId}/items`, {
     name: fields.name,
+    category: fields.category ?? "Other",
     conditionNotes: fields.conditionNotes ?? "",
     additionalNotes: fields.additionalNotes ?? "",
   });
@@ -113,6 +123,18 @@ export async function apply(
     nickname: fields.nickname,
     note: fields.note ?? "",
   });
+}
+
+// A claimant's OWN application id, read from their own "Your requests"
+// section of the public page (keyed by data-application-id, never by
+// nickname) — unlike applicationIdFor (which scrapes the manage page by
+// nickname text and so can't tell two same-named applicants apart), this
+// lets a test find each of two "Sam"s' own application even though they
+// share a display name.
+export function myOwnApplicationId(publicPageForThatClient: string): string {
+  const match = publicPageForThatClient.match(/data-application-id="([A-Za-z0-9_-]+)"/);
+  if (!match) throw new Error("no application id found on this client's own public page");
+  return match[1];
 }
 
 // Finds the application id for a given applicant's row on the manage page.
