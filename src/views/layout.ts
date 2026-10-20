@@ -19,7 +19,11 @@ export async function layout(title: string, body: unknown): Promise<string> {
   <body>
     <header class="site-header">
       <a class="brand" href="/">📦 MoveOut</a>
-      <a class="muted-link" href="/readme/">About this app</a>
+      <nav class="site-nav">
+        <a href="/">Browse</a>
+        <a href="/mine">My MoveOut</a>
+        <a class="muted-link" href="/readme/">About this app</a>
+      </nav>
     </header>
     <main>${body}</main>
   </body>

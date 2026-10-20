@@ -4,24 +4,20 @@ import { applicationStatusLabel } from "./status.ts";
 import type { Moveout } from "../db.ts";
 import type { ApplicationWithContext } from "../ownership.ts";
 
-export async function homeView(
+// "My MoveOut": the creator/claimant management home, as it was before Crit
+// 11 added the public Browse pool at "/" — moved to its own URL so a
+// returning user with pages or requests of their own always has a fixed
+// place to find them, regardless of what's trending in the public pool.
+export async function mineView(
   myMoveouts: Moveout[],
   myApplications: ApplicationWithContext[],
   opts: { error?: string } = {},
 ): Promise<string> {
   const body = html`
-    <h1>MoveOut</h1>
+    <h1>My MoveOut</h1>
     <p id="connection-status" class="conn-status" role="status" aria-live="polite" hidden></p>
-    <p class="lede">
-      Moving out and giving things away? Set a deadline, list what's free, and
-      let people request a pickup time — without a group chat losing track of
-      who's actually coming.
-    </p>
+    <p class="lede">The move-out pages you've created, and the requests you've sent.</p>
     <p class="muted">
-      <strong>Moving out?</strong> Create a page below, add items and pickup
-      times, then share the link that appears. <strong>Picking something
-      up?</strong> Open a shared link, request an item and a time, then wait
-      for the mover to confirm — the pickup spot appears here once they do.
       This browser remembers who you are; clearing its cookies or switching
       browsers loses that identity, with no way to recover it.
     </p>
@@ -31,7 +27,14 @@ export async function homeView(
       <ul class="plain-list" data-live-list="my-moveouts">
         ${myMoveouts.length === 0
           ? html`<li data-placeholder></li>`
-          : myMoveouts.map((m) => html`<li data-moveout-id="${m.id}"><a href="/m/${m.id}/manage">${m.title}</a></li>`)}
+          : myMoveouts.map(
+              (m) => html`
+                <li data-moveout-id="${m.id}">
+                  <a href="/m/${m.id}/manage">${m.title}</a>
+                  <span class="muted"> — ${m.visibility === "public" ? "Public" : "Unlisted"}</span>
+                </li>
+              `,
+            )}
       </ul>
     </section>
     <section data-live-section="home-requests" ${myApplications.length === 0 ? "hidden" : ""}>
@@ -76,11 +79,23 @@ export async function homeView(
           <label for="nickname">Your name</label>
           <input id="nickname" name="nickname" required maxlength="40" placeholder="What should people call you?" />
         </div>
+        <fieldset class="field visibility-field">
+          <legend>Who can find this page?</legend>
+          <label class="radio-row">
+            <input type="radio" name="visibility" value="public" checked />
+            <span><strong>Public</strong> — its open items appear in Browse for anyone to find.</span>
+          </label>
+          <label class="radio-row">
+            <input type="radio" name="visibility" value="unlisted" />
+            <span><strong>Unlisted</strong> — only reachable by the link you share; never in Browse.</span>
+          </label>
+          <p class="muted">You can change this later from the page's manage view.</p>
+        </fieldset>
         <button type="submit">Create move-out page</button>
       </form>
     </section>
 
     <script src="/live.js" data-live="/events"></script>
   `;
-  return layout("Home", body);
+  return layout("My MoveOut", body);
 }
