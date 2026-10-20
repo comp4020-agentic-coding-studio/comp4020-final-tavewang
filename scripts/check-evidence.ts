@@ -58,6 +58,19 @@ for (const sha of shas) {
   }
 }
 
+// The REFLECTIONS check above passes on any one of crit-8/9/10 existing (by
+// design — each week's cutoff only reads its own), so it can't by itself
+// prove THIS week's reflection is done. Crit 10 adds its own explicit,
+// non-empty check for its own filename.
+const crit10Path = "reflections/crit-10.md";
+if (!existsSync(crit10Path)) {
+  fail(`${crit10Path} is missing — this week's cutoff reads this exact file`);
+} else if (readFileSync(crit10Path, "utf8").trim().length === 0) {
+  fail(`${crit10Path} exists but is empty`);
+} else {
+  console.log(`✓ ${crit10Path} exists and is non-empty`);
+}
+
 if (failed) process.exit(1);
 console.log(
   shas.size > 0
