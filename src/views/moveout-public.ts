@@ -4,6 +4,17 @@ import { applicationStatusLabel, itemStatusLabel } from "./status.ts";
 import { formatInZone } from "../tz.ts";
 import type { Application, Item, Moveout, Timeslot } from "../db.ts";
 
+// A neutral, inline placeholder for an item with no uploaded photo — see
+// src/views/browse.ts for the identical one used in the pool; kept as two
+// copies rather than a shared import so the public page never has to import
+// anything from browse.ts's (public, unauthenticated-friendly, but larger)
+// module graph just for one inline SVG.
+const PLACEHOLDER_PHOTO = html`<svg class="item-photo placeholder-photo" viewBox="0 0 160 120" role="img" aria-label="No photo provided" xmlns="http://www.w3.org/2000/svg">
+  <rect width="160" height="120" rx="10" fill="currentColor" opacity="0.08" />
+  <path d="M40 82 L66 54 L84 72 L104 48 L124 82 Z" fill="currentColor" opacity="0.22" />
+  <circle cx="54" cy="42" r="9" fill="currentColor" opacity="0.22" />
+</svg>`;
+
 function timeslotLabel(slot: Timeslot, timezone: string): string {
   return `${formatInZone(slot.starts_at, timezone)} – ${new Intl.DateTimeFormat("en-AU", {
     timeZone: timezone,
@@ -86,9 +97,10 @@ function applyForm(item: Item, moveoutId: string, validSlots: Timeslot[], timezo
 function itemCard(item: Item, moveoutId: string, validSlots: Timeslot[], timezone: string, alreadyRequested: boolean) {
   const tone = item.status === "open" ? "pending" : item.status === "reserved" ? "active" : "done";
   return html`
-    <li class="item-card tone-${tone}" data-item-id="${item.id}" data-item-status="${item.status}">
+    <li id="item-${item.id}" class="item-card tone-${tone}" data-item-id="${item.id}" data-item-status="${item.status}">
       <div class="item-main">
-        ${item.photo_path ? html`<img class="item-photo" src="/${item.photo_path}" alt="" />` : ""}
+        ${item.photo_path ? html`<img class="item-photo" src="/${item.photo_path}" alt="" />` : PLACEHOLDER_PHOTO}
+        <span class="category-chip">${item.category}</span>
         <p class="item-name">${item.name}</p>
         ${item.condition_notes ? html`<p class="item-meta">${item.condition_notes}</p>` : ""}
         ${item.additional_notes ? html`<p class="item-meta">${item.additional_notes}</p>` : ""}

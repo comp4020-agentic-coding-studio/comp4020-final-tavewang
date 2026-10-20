@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { db, withTransaction, type Item, type Moveout, type Timeslot } from "../db.ts";
 import { getApplication, getItem, getMoveout, isCreator } from "../ownership.ts";
-import { notifyDevice, notifyMoveout } from "../live.ts";
+import { notifyDevice, notifyMoveout, notifyPublicPool } from "../live.ts";
 import { logEvent } from "../log.ts";
 
 export const applicationRoutes = new Hono();
@@ -83,6 +83,9 @@ applicationRoutes.post("/applications/:id/confirm", (c) => {
   logEvent({ event: "application.confirm", actor: deviceId, outcome: "success", moveoutId: ctx.moveout.id, itemId: ctx.item.id, applicationId, affectedDevice: app.claimer_device_id });
   notifyMoveout(ctx.moveout.id);
   notifyDevice(app.claimer_device_id);
+  // The item just left 'open' — if it was public, it must disappear from
+  // every open browse tab, not just stop appearing on the next full reload.
+  if (ctx.moveout.visibility === "public") notifyPublicPool();
   return c.redirect(`/m/${ctx.moveout.id}/manage`);
 });
 
@@ -142,6 +145,9 @@ applicationRoutes.post("/applications/:id/cancel", async (c) => {
   });
   notifyMoveout(ctx.moveout.id);
   notifyDevice(app.claimer_device_id);
+  // Cancelling a CONFIRMED booking reopens the item (CLAUDE.md) — it can
+  // reappear in a public pool it had dropped out of.
+  if (ctx.moveout.visibility === "public" && app.status === "confirmed") notifyPublicPool();
   return isOwner && !isClaimant ? c.redirect(`/m/${ctx.moveout.id}/manage`) : c.redirect(`/m/${ctx.moveout.id}`);
 });
 
@@ -204,7 +210,22 @@ applicationRoutes.post("/applications/:id/timeslot", async (c) => {
     return c.text("That pickup time isn't valid anymore — pick another.", 400);
   }
 
-  db.prepare("UPDATE applications SET timeslot_id = ? WHERE id = ? AND status = 'pending'").run(timeslot.id, applicationId);
+  // Guarded the same way confirm/cancel/complete are (CLAUDE.md: "Confirming
+  // is the one place two requests can race" generalises to every guarded
+  // transition) — the status check above is a cheap early rejection for the
+  // common case, but between that check and this UPDATE the application
+  // could have just been confirmed by the creator (a race this route has no
+  // lock against). Without checking `changes` here, that race silently did
+  // nothing to the database while still returning 302 and logging "success"
+  // — a real bug: the claimant would be told their new time was saved when
+  // their application was actually already confirmed on the OLD one.
+  const result = db
+    .prepare("UPDATE applications SET timeslot_id = ? WHERE id = ? AND status = 'pending'")
+    .run(timeslot.id, applicationId);
+  if (result.changes === 0) {
+    logEvent({ event: "application.timeslot", actor: deviceId, outcome: "conflict", moveoutId: ctx.moveout.id, applicationId, status: 409, reasonCode: "lost_race" });
+    return c.text("This request was just settled — its timeslot can no longer be changed.", 409);
+  }
   logEvent({ event: "application.timeslot", actor: deviceId, outcome: "success", moveoutId: ctx.moveout.id, itemId: ctx.item.id, applicationId, timeslotId: timeslot.id });
   notifyMoveout(ctx.moveout.id);
   return c.redirect(`/m/${ctx.moveout.id}`);

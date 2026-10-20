@@ -1,7 +1,7 @@
 import { html } from "hono/html";
 import { layout } from "./layout.ts";
 import { formatInZone } from "../tz.ts";
-import type { Application, Item, Moveout, Timeslot } from "../db.ts";
+import { ITEM_CATEGORIES, type Application, type Item, type Moveout, type Timeslot } from "../db.ts";
 
 function slotLabel(slot: Timeslot, timezone: string): string {
   return formatInZone(slot.starts_at, timezone);
@@ -53,7 +53,8 @@ function openItemCard(entry: OpenItemEntry, timezone: string) {
   return html`
     <li class="item-card tone-pending" data-item-id="${entry.item.id}" data-item-status="${entry.item.status}">
       <div class="item-main">
-        ${entry.item.photo_path ? html`<img class="item-photo" src="/${entry.item.photo_path}" alt="" />` : ""}
+        ${entry.item.photo_path ? html`<img class="item-photo" src="/${entry.item.photo_path}" alt="" /> ` : ""}
+        <span class="category-chip">${entry.item.category}</span>
         <p class="item-name">${entry.item.name}</p>
         ${entry.item.condition_notes ? html`<p class="item-meta">${entry.item.condition_notes}</p>` : ""}
         ${entry.pending.length === 0
@@ -148,12 +149,33 @@ export async function moveoutManageView(
       </div>
     </section>
 
+    <section data-live-section="visibility" data-visibility="${moveout.visibility}">
+      <h2>Who can find this page?</h2>
+      <p class="muted">
+        ${moveout.visibility === "public"
+          ? "Public — this page's open items appear in Browse for anyone to find."
+          : "Unlisted — only reachable with the link above; never appears in Browse."}
+      </p>
+      <form method="post" action="/m/${moveout.id}/visibility" class="inline-form" data-ajax>
+        <input type="hidden" name="visibility" value="${moveout.visibility === "public" ? "unlisted" : "public"}" />
+        <button type="submit">
+          ${moveout.visibility === "public" ? "Make unlisted" : "Make public"}
+        </button>
+      </form>
+    </section>
+
     <section>
       <h2>Add an item</h2>
       <form method="post" action="/m/${moveout.id}/items" enctype="multipart/form-data" class="stacked-form" data-ajax>
         <div class="field">
           <label for="itemName">Name</label>
           <input id="itemName" name="name" required maxlength="80" placeholder="e.g. Desk lamp" />
+        </div>
+        <div class="field">
+          <label for="itemCategory">Category</label>
+          <select id="itemCategory" name="category" required>
+            ${ITEM_CATEGORIES.map((cat) => html`<option value="${cat}">${cat}</option>`)}
+          </select>
         </div>
         <div class="field">
           <label for="itemPhoto">Photo (optional, JPEG/PNG/WebP, up to 5 MB)</label>
@@ -169,6 +191,9 @@ export async function moveoutManageView(
         </div>
         <button type="submit">Add item</button>
       </form>
+      <p class="muted">
+        Visible on this page as soon as you add it; also shows up in Browse once this page is Public.
+      </p>
     </section>
 
     <section>

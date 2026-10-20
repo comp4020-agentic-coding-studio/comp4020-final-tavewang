@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { db, withTransaction, type Application } from "../db.ts";
 import { getItem, getMoveout, isCreator } from "../ownership.ts";
-import { notifyDevice, notifyMoveout } from "../live.ts";
+import { notifyDevice, notifyMoveout, notifyPublicPool } from "../live.ts";
 import { logEvent } from "../log.ts";
 
 export const itemRoutes = new Hono();
@@ -41,5 +41,6 @@ itemRoutes.post("/items/:id/withdraw", (c) => {
   logEvent({ event: "item.withdraw", actor: deviceId, outcome: "success", moveoutId: moveout.id, itemId: item.id });
   notifyMoveout(moveout.id);
   for (const cancelledDevice of cancelledDevices) notifyDevice(cancelledDevice);
+  if (moveout.visibility === "public") notifyPublicPool();
   return c.redirect(`/m/${moveout.id}/manage`);
 });

@@ -1,11 +1,11 @@
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
-import { db, type Application, type Item, type Timeslot } from "../db.ts";
+import { db, isItemCategory, type Application, type Item, type Timeslot } from "../db.ts";
 import { getMoveout, isCreator, listItems, listTimeslots } from "../ownership.ts";
 import { newId } from "../ids.ts";
 import { zonedDateTimeToUtc } from "../tz.ts";
 import { saveUploadedPhoto, isUploadRejection } from "../uploads.ts";
-import { notifyDevice, notifyMoveout, onMoveoutChange, pumpSSE } from "../live.ts";
+import { notifyDevice, notifyMoveout, notifyPublicPool, onMoveoutChange, pumpSSE } from "../live.ts";
 import { moveoutPublicView, moveoutNotFoundView } from "../views/moveout-public.ts";
 import { moveoutManageView, type OpenItemEntry, type UpcomingEntry, type CompletedEntry } from "../views/moveout-manage.ts";
 import { logEvent } from "../log.ts";
@@ -128,6 +128,32 @@ moveoutRoutes.get("/m/:id/manage", (c) => {
   );
 });
 
+moveoutRoutes.post("/m/:id/visibility", async (c) => {
+  const moveout = getMoveout(c.req.param("id"));
+  if (!moveout) return c.notFound();
+  const deviceId = c.get("deviceId");
+  if (!isCreator(moveout, deviceId)) {
+    logEvent({ event: "moveout.visibility", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 404, reasonCode: "not_creator" });
+    return c.notFound();
+  }
+  const form = await c.req.formData();
+  const next = String(form.get("visibility") ?? "");
+  if (next !== "public" && next !== "unlisted") {
+    logEvent({ event: "moveout.visibility", actor: deviceId, outcome: "invalid", moveoutId: moveout.id, status: 400, reasonCode: "bad_value" });
+    return c.text('visibility must be "public" or "unlisted".', 400);
+  }
+
+  db.prepare("UPDATE moveouts SET visibility = ? WHERE id = ?").run(next, moveout.id);
+  logEvent({ event: "moveout.visibility", actor: deviceId, outcome: "success", moveoutId: moveout.id, reasonCode: next });
+
+  notifyMoveout(moveout.id);
+  // Either direction can change what the pool shows: going public adds this
+  // page's open items to it, going unlisted removes them — both need every
+  // open browse tab to re-fetch, not just this page's own subscribers.
+  notifyPublicPool();
+  return c.redirect(`/m/${moveout.id}/manage`);
+});
+
 // Carries no data, just "something on this page changed" — any subscriber,
 // public visitor or creator alike, re-fetches the page they already had
 // permission to see, and that fetch re-runs the usual ownership checks. So
@@ -150,6 +176,12 @@ moveoutRoutes.post("/m/:id/items", async (c) => {
   const form = await c.req.formData();
   const name = String(form.get("name") ?? "").trim();
   if (!name) return c.text("Name is required.", 400);
+  // Server-validated against the fixed set (src/db.ts#ITEM_CATEGORIES), not
+  // trusted from the submitted <select> value — an unrecognised or missing
+  // category falls back to "Other" rather than failing the whole submission,
+  // same spirit as its migration default for pre-Crit-11 items.
+  const rawCategory = String(form.get("category") ?? "");
+  const category = isItemCategory(rawCategory) ? rawCategory : "Other";
   const conditionNotes = String(form.get("conditionNotes") ?? "").trim() || null;
   const additionalNotes = String(form.get("additionalNotes") ?? "").trim() || null;
 
@@ -160,12 +192,13 @@ moveoutRoutes.post("/m/:id/items", async (c) => {
 
   const itemId = newId();
   db.prepare(
-    `INSERT INTO items (id, moveout_id, name, photo_path, condition_notes, additional_notes)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(itemId, moveout.id, name, photoResult, conditionNotes, additionalNotes);
-  logEvent({ event: "item.add", actor: deviceId, outcome: "success", moveoutId: moveout.id, itemId });
+    `INSERT INTO items (id, moveout_id, name, category, photo_path, condition_notes, additional_notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(itemId, moveout.id, name, category, photoResult, conditionNotes, additionalNotes);
+  logEvent({ event: "item.add", actor: deviceId, outcome: "success", moveoutId: moveout.id, itemId, reasonCode: category });
 
   notifyMoveout(moveout.id);
+  if (moveout.visibility === "public") notifyPublicPool();
   return c.redirect(`/m/${moveout.id}/manage`);
 });
 
@@ -243,9 +276,22 @@ moveoutRoutes.post("/m/:id/apply", async (c) => {
       `INSERT INTO applications (id, item_id, timeslot_id, claimer_device_id, claimer_nickname, note)
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(applicationId, item.id, timeslot.id, deviceId, nickname, note);
-  } catch {
-    // the partial unique index rejected it: an active request from this
-    // device already exists for this item
+  } catch (err) {
+    // Only the partial unique index (applications_one_active_per_device)
+    // means "an active request from this device already exists for this
+    // item" — any OTHER database error (disk full, a constraint we didn't
+    // expect, node:sqlite internals) is a real server fault, and treating it
+    // as a routine duplicate-request conflict would both mislead whoever's
+    // reading the logs and hide an actual bug behind a 409 a person would
+    // just shrug off. node:sqlite's SqliteError carries the SQLite result
+    // code as `errcode` (2067 == SQLITE_CONSTRAINT_UNIQUE); matching on that,
+    // not just "any thrown error", is what makes this distinction real.
+    const isUniqueConstraint =
+      err instanceof Error && "errcode" in err && (err as { errcode?: number }).errcode === 2067;
+    if (!isUniqueConstraint) {
+      logEvent({ event: "application.apply", actor: deviceId, outcome: "error", moveoutId: moveout.id, itemId, status: 500, reasonCode: "unexpected_db_error" });
+      return c.text("Something went wrong on our end — please try again.", 500);
+    }
     logEvent({ event: "application.apply", actor: deviceId, outcome: "conflict", moveoutId: moveout.id, itemId, status: 409, reasonCode: "duplicate_active_request" });
     return c.text("You already have a request in for this item.", 409);
   }
@@ -253,5 +299,9 @@ moveoutRoutes.post("/m/:id/apply", async (c) => {
 
   notifyMoveout(moveout.id);
   notifyDevice(deviceId);
+  // Applying for the last open slot on an item doesn't change items.status
+  // (still 'open' until confirmed) — so the pool itself only changes once
+  // this gets confirmed or the item's withdrawn, both handled where those
+  // happen (src/routes/applications.ts, src/routes/items.ts).
   return c.redirect(`/m/${moveout.id}`);
 });
