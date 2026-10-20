@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { db, withTransaction, type Application } from "../db.ts";
 import { getItem, getMoveout, isCreator } from "../ownership.ts";
 import { notifyDevice, notifyMoveout } from "../live.ts";
+import { logEvent } from "../log.ts";
 
 export const itemRoutes = new Hono();
 
@@ -9,7 +10,11 @@ itemRoutes.post("/items/:id/withdraw", (c) => {
   const item = getItem(c.req.param("id"));
   if (!item) return c.notFound();
   const moveout = getMoveout(item.moveout_id)!;
-  if (!isCreator(moveout, c.get("deviceId"))) return c.notFound();
+  const deviceId = c.get("deviceId");
+  if (!isCreator(moveout, deviceId)) {
+    logEvent({ event: "item.withdraw", actor: deviceId, outcome: "denied", moveoutId: moveout.id, itemId: item.id, status: 404, reasonCode: "not_creator" });
+    return c.notFound();
+  }
 
   const { changed, cancelledDevices } = withTransaction(() => {
     // Guarded: only an item that's still 'open' can be withdrawn — one with
@@ -30,9 +35,11 @@ itemRoutes.post("/items/:id/withdraw", (c) => {
   });
 
   if (changed === 0) {
+    logEvent({ event: "item.withdraw", actor: deviceId, outcome: "conflict", moveoutId: moveout.id, itemId: item.id, status: 409, reasonCode: "item_reserved" });
     return c.text("Can't withdraw this — it already has a confirmed pickup.", 409);
   }
+  logEvent({ event: "item.withdraw", actor: deviceId, outcome: "success", moveoutId: moveout.id, itemId: item.id });
   notifyMoveout(moveout.id);
-  for (const deviceId of cancelledDevices) notifyDevice(deviceId);
+  for (const cancelledDevice of cancelledDevices) notifyDevice(cancelledDevice);
   return c.redirect(`/m/${moveout.id}/manage`);
 });

@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { db, withTransaction, type Item, type Moveout, type Timeslot } from "../db.ts";
 import { getApplication, getItem, getMoveout, isCreator } from "../ownership.ts";
 import { notifyDevice, notifyMoveout } from "../live.ts";
+import { logEvent } from "../log.ts";
 
 export const applicationRoutes = new Hono();
 
@@ -19,10 +20,15 @@ applicationRoutes.post("/applications/:id/confirm", (c) => {
   const applicationId = c.req.param("id");
   const ctx = context(applicationId);
   if (!ctx) return c.notFound();
-  if (!isCreator(ctx.moveout, c.get("deviceId"))) return c.notFound();
+  const deviceId = c.get("deviceId");
+  if (!isCreator(ctx.moveout, deviceId)) {
+    logEvent({ event: "application.confirm", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 404, reasonCode: "not_creator" });
+    return c.notFound();
+  }
 
   const now = new Date().toISOString();
   if (now > ctx.moveout.deadline_at) {
+    logEvent({ event: "application.confirm", actor: deviceId, outcome: "invalid", moveoutId: ctx.moveout.id, applicationId, status: 403, reasonCode: "deadline_passed" });
     return c.text("The deadline has passed — new confirmations are closed.", 403);
   }
 
@@ -32,10 +38,12 @@ applicationRoutes.post("/applications/:id/confirm", (c) => {
     // The transaction below still re-checks this atomically — this guard
     // only avoids needlessly flipping the item to 'reserved' and back when
     // we already know the application can't be confirmed.
+    logEvent({ event: "application.confirm", actor: deviceId, outcome: "conflict", moveoutId: ctx.moveout.id, applicationId, affectedDevice: app.claimer_device_id, status: 409, reasonCode: "not_pending" });
     return c.text("This request is no longer pending — it was already settled.", 409);
   }
   const timeslot = db.prepare("SELECT * FROM timeslots WHERE id = ?").get(app.timeslot_id) as Timeslot | undefined;
   if (timeslot && timeslot.starts_at <= now) {
+    logEvent({ event: "application.confirm", actor: deviceId, outcome: "conflict", moveoutId: ctx.moveout.id, applicationId, affectedDevice: app.claimer_device_id, status: 409, reasonCode: "timeslot_passed" });
     return c.text("That applicant's pickup time has already passed — ask them to choose a new one first.", 409);
   }
 
@@ -69,8 +77,10 @@ applicationRoutes.post("/applications/:id/confirm", (c) => {
   }
 
   if (changed === 0) {
+    logEvent({ event: "application.confirm", actor: deviceId, outcome: "conflict", moveoutId: ctx.moveout.id, applicationId, affectedDevice: app.claimer_device_id, status: 409, reasonCode: "lost_race" });
     return c.text("This item was already reserved, or this request was no longer pending (maybe settled just now).", 409);
   }
+  logEvent({ event: "application.confirm", actor: deviceId, outcome: "success", moveoutId: ctx.moveout.id, itemId: ctx.item.id, applicationId, affectedDevice: app.claimer_device_id });
   notifyMoveout(ctx.moveout.id);
   notifyDevice(app.claimer_device_id);
   return c.redirect(`/m/${ctx.moveout.id}/manage`);
@@ -85,13 +95,17 @@ applicationRoutes.post("/applications/:id/cancel", async (c) => {
 
   const isClaimant = app.claimer_device_id === deviceId;
   const isOwner = isCreator(ctx.moveout, deviceId);
-  if (!isClaimant && !isOwner) return c.notFound();
+  if (!isClaimant && !isOwner) {
+    logEvent({ event: "application.cancel", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, affectedDevice: app.claimer_device_id, status: 404, reasonCode: "not_claimant_or_owner" });
+    return c.notFound();
+  }
 
   let reason: string | null = null;
   if (isOwner && !isClaimant) {
     // The creator can only cancel a CONFIRMED booking, and only with a
     // reason the claimant will see — a silent revocation isn't allowed.
     if (app.status !== "confirmed") {
+      logEvent({ event: "application.cancel", actor: deviceId, outcome: "conflict", moveoutId: ctx.moveout.id, applicationId, affectedDevice: app.claimer_device_id, status: 409, reasonCode: "not_confirmed" });
       return c.text("Only a confirmed booking can be cancelled this way.", 409);
     }
     const form = await c.req.formData();
@@ -113,8 +127,19 @@ applicationRoutes.post("/applications/:id/cancel", async (c) => {
   });
 
   if (changed === 0) {
+    logEvent({ event: "application.cancel", actor: deviceId, outcome: "conflict", moveoutId: ctx.moveout.id, applicationId, affectedDevice: app.claimer_device_id, status: 409, reasonCode: "already_settled" });
     return c.text("This request was already settled (completed or already cancelled).", 409);
   }
+  logEvent({
+    event: "application.cancel",
+    actor: deviceId,
+    outcome: "success",
+    moveoutId: ctx.moveout.id,
+    itemId: ctx.item.id,
+    applicationId,
+    affectedDevice: app.claimer_device_id,
+    reasonCode: isOwner && !isClaimant ? "cancelled_by_creator" : "cancelled_by_claimant",
+  });
   notifyMoveout(ctx.moveout.id);
   notifyDevice(app.claimer_device_id);
   return isOwner && !isClaimant ? c.redirect(`/m/${ctx.moveout.id}/manage`) : c.redirect(`/m/${ctx.moveout.id}`);
@@ -124,7 +149,11 @@ applicationRoutes.post("/applications/:id/complete", (c) => {
   const applicationId = c.req.param("id");
   const ctx = context(applicationId);
   if (!ctx) return c.notFound();
-  if (!isCreator(ctx.moveout, c.get("deviceId"))) return c.notFound();
+  const deviceId = c.get("deviceId");
+  if (!isCreator(ctx.moveout, deviceId)) {
+    logEvent({ event: "application.complete", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 404, reasonCode: "not_creator" });
+    return c.notFound();
+  }
   const app = getApplication(applicationId)!;
 
   // No deadline gate here on purpose: recording what actually happened with
@@ -140,8 +169,10 @@ applicationRoutes.post("/applications/:id/complete", (c) => {
   });
 
   if (changed === 0) {
+    logEvent({ event: "application.complete", actor: deviceId, outcome: "conflict", moveoutId: ctx.moveout.id, applicationId, affectedDevice: app.claimer_device_id, status: 409, reasonCode: "not_confirmed" });
     return c.text("This booking isn't in a state that can be marked picked up.", 409);
   }
+  logEvent({ event: "application.complete", actor: deviceId, outcome: "success", moveoutId: ctx.moveout.id, itemId: ctx.item.id, applicationId, affectedDevice: app.claimer_device_id });
   notifyMoveout(ctx.moveout.id);
   notifyDevice(app.claimer_device_id);
   return c.redirect(`/m/${ctx.moveout.id}/manage`);
@@ -152,8 +183,13 @@ applicationRoutes.post("/applications/:id/timeslot", async (c) => {
   const ctx = context(applicationId);
   if (!ctx) return c.notFound();
   const app = getApplication(applicationId)!;
-  if (app.claimer_device_id !== c.get("deviceId")) return c.notFound();
+  const deviceId = c.get("deviceId");
+  if (app.claimer_device_id !== deviceId) {
+    logEvent({ event: "application.timeslot", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 404, reasonCode: "not_claimant" });
+    return c.notFound();
+  }
   if (app.status !== "pending") {
+    logEvent({ event: "application.timeslot", actor: deviceId, outcome: "conflict", moveoutId: ctx.moveout.id, applicationId, status: 409, reasonCode: "not_pending" });
     return c.text("Only a still-pending request's timeslot can be changed.", 409);
   }
 
@@ -164,10 +200,12 @@ applicationRoutes.post("/applications/:id/timeslot", async (c) => {
     .prepare("SELECT * FROM timeslots WHERE id = ? AND moveout_id = ?")
     .get(timeslotId, ctx.moveout.id) as Timeslot | undefined;
   if (!timeslot || timeslot.starts_at <= now || timeslot.starts_at > ctx.moveout.deadline_at) {
+    logEvent({ event: "application.timeslot", actor: deviceId, outcome: "invalid", moveoutId: ctx.moveout.id, applicationId, status: 400, reasonCode: "timeslot_invalid" });
     return c.text("That pickup time isn't valid anymore — pick another.", 400);
   }
 
   db.prepare("UPDATE applications SET timeslot_id = ? WHERE id = ? AND status = 'pending'").run(timeslot.id, applicationId);
+  logEvent({ event: "application.timeslot", actor: deviceId, outcome: "success", moveoutId: ctx.moveout.id, itemId: ctx.item.id, applicationId, timeslotId: timeslot.id });
   notifyMoveout(ctx.moveout.id);
   return c.redirect(`/m/${ctx.moveout.id}`);
 });

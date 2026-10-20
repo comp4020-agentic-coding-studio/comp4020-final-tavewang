@@ -6,6 +6,7 @@ import { zonedDateTimeToUtc, isValidTimeZone } from "../tz.ts";
 import { listApplicationsWithContext, listMoveoutsCreatedBy } from "../ownership.ts";
 import { notifyDevice, onDeviceChange, pumpSSE } from "../live.ts";
 import { homeView } from "../views/home.ts";
+import { logEvent } from "../log.ts";
 
 export const homeRoutes = new Hono();
 
@@ -54,6 +55,7 @@ homeRoutes.post("/moveouts", async (c) => {
     `INSERT INTO moveouts (id, title, area, pickup_location, deadline_at, timezone, creator_device_id, creator_nickname)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(id, title, area, pickupLocation, deadlineAt.toISOString(), timezone, deviceId, nickname);
+  logEvent({ event: "moveout.create", actor: deviceId, outcome: "success", moveoutId: id });
 
   // So another already-open tab on this same device (its home page's
   // "Your move-out pages" list) picks this up without a manual reload.

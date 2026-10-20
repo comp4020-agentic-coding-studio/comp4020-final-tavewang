@@ -8,6 +8,7 @@ import { saveUploadedPhoto, isUploadRejection } from "../uploads.ts";
 import { notifyDevice, notifyMoveout, onMoveoutChange, pumpSSE } from "../live.ts";
 import { moveoutPublicView, moveoutNotFoundView } from "../views/moveout-public.ts";
 import { moveoutManageView, type OpenItemEntry, type UpcomingEntry, type CompletedEntry } from "../views/moveout-manage.ts";
+import { logEvent } from "../log.ts";
 
 export const moveoutRoutes = new Hono();
 
@@ -140,7 +141,11 @@ moveoutRoutes.get("/m/:id/events", (c) => {
 moveoutRoutes.post("/m/:id/items", async (c) => {
   const moveout = getMoveout(c.req.param("id"));
   if (!moveout) return c.notFound();
-  if (!isCreator(moveout, c.get("deviceId"))) return c.notFound();
+  const deviceId = c.get("deviceId");
+  if (!isCreator(moveout, deviceId)) {
+    logEvent({ event: "item.add", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 404, reasonCode: "not_creator" });
+    return c.notFound();
+  }
 
   const form = await c.req.formData();
   const name = String(form.get("name") ?? "").trim();
@@ -153,10 +158,12 @@ moveoutRoutes.post("/m/:id/items", async (c) => {
     return c.text(photoResult.error, 400);
   }
 
+  const itemId = newId();
   db.prepare(
     `INSERT INTO items (id, moveout_id, name, photo_path, condition_notes, additional_notes)
      VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(newId(), moveout.id, name, photoResult, conditionNotes, additionalNotes);
+  ).run(itemId, moveout.id, name, photoResult, conditionNotes, additionalNotes);
+  logEvent({ event: "item.add", actor: deviceId, outcome: "success", moveoutId: moveout.id, itemId });
 
   notifyMoveout(moveout.id);
   return c.redirect(`/m/${moveout.id}/manage`);
@@ -165,7 +172,11 @@ moveoutRoutes.post("/m/:id/items", async (c) => {
 moveoutRoutes.post("/m/:id/timeslots", async (c) => {
   const moveout = getMoveout(c.req.param("id"));
   if (!moveout) return c.notFound();
-  if (!isCreator(moveout, c.get("deviceId"))) return c.notFound();
+  const deviceId = c.get("deviceId");
+  if (!isCreator(moveout, deviceId)) {
+    logEvent({ event: "timeslot.add", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 404, reasonCode: "not_creator" });
+    return c.notFound();
+  }
 
   const form = await c.req.formData();
   const startsAt = zonedDateTimeToUtc(String(form.get("startsAt") ?? ""), moveout.timezone);
@@ -176,12 +187,14 @@ moveoutRoutes.post("/m/:id/timeslots", async (c) => {
     return c.text("A pickup time can't be later than the deadline.", 400);
   }
 
+  const timeslotId = newId();
   db.prepare("INSERT INTO timeslots (id, moveout_id, starts_at, ends_at) VALUES (?, ?, ?, ?)").run(
-    newId(),
+    timeslotId,
     moveout.id,
     startsAt.toISOString(),
     endsAt.toISOString(),
   );
+  logEvent({ event: "timeslot.add", actor: deviceId, outcome: "success", moveoutId: moveout.id, timeslotId });
 
   notifyMoveout(moveout.id);
   return c.redirect(`/m/${moveout.id}/manage`);
@@ -191,10 +204,14 @@ moveoutRoutes.post("/m/:id/apply", async (c) => {
   const moveout = getMoveout(c.req.param("id"));
   if (!moveout) return c.notFound();
   const deviceId = c.get("deviceId");
-  if (isCreator(moveout, deviceId)) return c.text("You can't request your own item.", 400);
+  if (isCreator(moveout, deviceId)) {
+    logEvent({ event: "application.apply", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 400, reasonCode: "self_request" });
+    return c.text("You can't request your own item.", 400);
+  }
 
   const now = new Date().toISOString();
   if (now > moveout.deadline_at) {
+    logEvent({ event: "application.apply", actor: deviceId, outcome: "invalid", moveoutId: moveout.id, status: 403, reasonCode: "deadline_passed" });
     return c.text("The deadline for this move-out has passed — new requests are closed.", 403);
   }
 
@@ -209,25 +226,30 @@ moveoutRoutes.post("/m/:id/apply", async (c) => {
     | Item
     | undefined;
   if (!item || item.status !== "open") {
+    logEvent({ event: "application.apply", actor: deviceId, outcome: "conflict", moveoutId: moveout.id, itemId, status: 409, reasonCode: "item_unavailable" });
     return c.text("This item isn't available to request right now.", 409);
   }
   const timeslot = db.prepare("SELECT * FROM timeslots WHERE id = ? AND moveout_id = ?").get(timeslotId, moveout.id) as
     | Timeslot
     | undefined;
   if (!timeslot || timeslot.starts_at <= now || timeslot.starts_at > moveout.deadline_at) {
+    logEvent({ event: "application.apply", actor: deviceId, outcome: "invalid", moveoutId: moveout.id, itemId, status: 400, reasonCode: "timeslot_invalid" });
     return c.text("That pickup time isn't valid anymore — pick another.", 400);
   }
 
+  const applicationId = newId();
   try {
     db.prepare(
       `INSERT INTO applications (id, item_id, timeslot_id, claimer_device_id, claimer_nickname, note)
        VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(newId(), item.id, timeslot.id, deviceId, nickname, note);
+    ).run(applicationId, item.id, timeslot.id, deviceId, nickname, note);
   } catch {
     // the partial unique index rejected it: an active request from this
     // device already exists for this item
+    logEvent({ event: "application.apply", actor: deviceId, outcome: "conflict", moveoutId: moveout.id, itemId, status: 409, reasonCode: "duplicate_active_request" });
     return c.text("You already have a request in for this item.", 409);
   }
+  logEvent({ event: "application.apply", actor: deviceId, outcome: "success", moveoutId: moveout.id, itemId, applicationId });
 
   notifyMoveout(moveout.id);
   notifyDevice(deviceId);
