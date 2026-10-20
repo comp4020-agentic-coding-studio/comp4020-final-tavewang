@@ -13,6 +13,7 @@ import { homeRoutes } from "./routes/home.ts";
 import { moveoutRoutes } from "./routes/moveout.ts";
 import { itemRoutes } from "./routes/items.ts";
 import { applicationRoutes } from "./routes/applications.ts";
+import { browseRoutes } from "./routes/browse.ts";
 
 const app = new Hono();
 app.use("*", deviceMiddleware);
@@ -52,6 +53,7 @@ app.get("/readme/", (c) => {
 </html>`);
 });
 
+app.route("/", browseRoutes);
 app.route("/", homeRoutes);
 app.route("/", moveoutRoutes);
 app.route("/", itemRoutes);

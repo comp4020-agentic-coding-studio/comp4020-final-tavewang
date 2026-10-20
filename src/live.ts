@@ -11,6 +11,13 @@ import type { SSEStreamingApi } from "hono/streaming";
 
 const moveoutBus = new EventEmitter().setMaxListeners(0);
 const deviceBus = new EventEmitter().setMaxListeners(0);
+// Crit 11: one more bus, for the public browse pool. Carries exactly the
+// same "something changed, go re-fetch" signal as the other two — never
+// item/application data — so a subscriber who has an unlisted page's link
+// open (and is on moveoutBus for it) is unaffected, and a browse-pool
+// subscriber learns nothing about anything that isn't already public.
+const poolBus = new EventEmitter().setMaxListeners(0);
+const POOL_EVENT = "pool";
 
 export function notifyMoveout(moveoutId: string): void {
   moveoutBus.emit(moveoutId);
@@ -18,6 +25,13 @@ export function notifyMoveout(moveoutId: string): void {
 
 export function notifyDevice(deviceId: string): void {
   deviceBus.emit(deviceId);
+}
+
+// Call whenever a write could change what the public pool shows: a public
+// item's availability (added, withdrawn, confirmed, completed), or a
+// move-out's visibility flipping either direction.
+export function notifyPublicPool(): void {
+  poolBus.emit(POOL_EVENT);
 }
 
 export function onMoveoutChange(moveoutId: string, listener: () => void): () => void {
@@ -28,6 +42,11 @@ export function onMoveoutChange(moveoutId: string, listener: () => void): () => 
 export function onDeviceChange(deviceId: string, listener: () => void): () => void {
   deviceBus.on(deviceId, listener);
   return () => deviceBus.off(deviceId, listener);
+}
+
+export function onPublicPoolChange(listener: () => void): () => void {
+  poolBus.on(POOL_EVENT, listener);
+  return () => poolBus.off(POOL_EVENT, listener);
 }
 
 // Drives one SSE connection: pushes a content-free "sync" event the instant
