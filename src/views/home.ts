@@ -17,6 +17,14 @@ export async function homeView(
       let people request a pickup time — without a group chat losing track of
       who's actually coming.
     </p>
+    <p class="muted">
+      <strong>Moving out?</strong> Create a page below, add items and pickup
+      times, then share the link that appears. <strong>Picking something
+      up?</strong> Open a shared link, request an item and a time, then wait
+      for the mover to confirm — the pickup spot appears here once they do.
+      This browser remembers who you are; clearing its cookies or switching
+      browsers loses that identity, with no way to recover it.
+    </p>
     ${opts.error ? html`<p class="error" role="alert">${opts.error}</p>` : ""}
     <section data-live-section="my-moveouts" ${myMoveouts.length === 0 ? "hidden" : ""}>
       <h2>Your move-out pages</h2>

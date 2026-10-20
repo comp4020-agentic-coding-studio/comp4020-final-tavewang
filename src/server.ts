@@ -46,6 +46,7 @@ app.get("/readme/", (c) => {
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <p class="readme-enter"><a href="/">→ Enter MoveOut</a></p>
     <main class="readme">${renderReadmeHtml()}</main>
   </body>
 </html>`);

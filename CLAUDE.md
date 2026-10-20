@@ -187,6 +187,47 @@ currently listening."
   and the last resync fetch actually did, never `navigator.onLine` — a
   machine can report "online" while this app's own connection is down.
 
+## Business-action logging (crit 10)
+
+`src/log.ts#logEvent` is the one place that writes the server's business log
+(one JSON line to stdout per real action — create, add item, add timeslot,
+apply, confirm, cancel, complete, change timeslot, withdraw). See [ADR
+003](docs/decisions/003-business-logging.md) for why it's shaped this way.
+Rules a route handler must follow when calling it:
+
+- **Actor is always the server-resolved `deviceId`** (`c.get("deviceId")`),
+  never a client-supplied field. `logEvent` hashes it before writing — never
+  call `console.log`/write the raw `deviceId` (or anything derived from the
+  `device` cookie) anywhere else in a route.
+- **`outcome: "success"` only after the database write actually committed.**
+  For a guarded `UPDATE ... WHERE status = '<state>'` inside a transaction,
+  that means after confirming `changes > 0` (or, for the two-row confirm
+  transaction, after both guards passed) — never before the write, never
+  inside a `try` block that might still roll back.
+- **A rejected write is never `success`.** Use `denied` for an ownership/
+  permission check failing (wrong device), `invalid` for a validation or
+  state-precondition failure (deadline passed, nickname missing), `conflict`
+  for losing a race or acting on an already-settled row (409s), and `error`
+  only for a genuine unexpected exception — don't collapse all four into one
+  bucket, and don't let an unexpected server error get miscategorised as a
+  business `conflict` (that's what `error` is for).
+- **Use `affectedDevice` whenever the actor is acting on someone else's
+  row** (a creator confirming, cancelling, or completing a claimant's
+  application) — `logEvent` only emits it when it actually differs from the
+  actor, so the common case (a claimant acting on their own request) stays
+  one-identity. This is what lets a crit narrator say "the mover confirmed
+  Bob's request," not just "something happened."
+- **Never log a nickname, a note, a pickup address, a cancellation reason,
+  or any other free-text field.** Pass only ids (`moveoutId`, `itemId`,
+  `timeslotId`, `applicationId`) and a short fixed `reasonCode` string you
+  chose yourself in the route — never interpolate user input into
+  `reasonCode`.
+- **Don't let this log get buried by anything high-frequency.** Static
+  asset requests, the SSE heartbeat/ping, and route lookups that 404 on a
+  not-found resource (as opposed to a real permission denial) don't call
+  `logEvent` — it exists for the handful of state-changing writes per
+  minute a real crit produces, not a general access log.
+
 ## Accessibility and legibility
 
 - Status is always shown as text ("Waiting for confirmation", "Confirmed —

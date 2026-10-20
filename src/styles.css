@@ -513,6 +513,17 @@ section form > button[type="submit"]:hover {
   padding: 2.5rem 1.25rem 5rem;
 }
 
+.readme-enter {
+  max-width: 660px;
+  margin: 1.5rem auto 0;
+  padding: 0 1.25rem;
+  font-size: 1.1rem;
+}
+
+.readme-enter a {
+  font-weight: 600;
+}
+
 .readme h1 {
   font-size: 1.9rem;
 }
