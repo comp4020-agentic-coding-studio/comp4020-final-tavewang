@@ -27,12 +27,92 @@ async function setUpOpenItem(ownerNickname: string, title: string) {
 }
 
 it("a non-creator can't manage a move-out page or confirm its applications", async () => {
-  const { moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Manage-guard test");
+  const { owner, moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Manage-guard test");
   const stranger = makeClient(baseUrl);
   await apply(stranger, moveout.moveoutId, { itemId, timeslotId, nickname: "Stranger" });
 
   expect((await stranger.get(moveout.manageUrl)).status).toBe(403);
   expect((await stranger.post(`/items/${itemId}/withdraw`)).status).toBe(404);
+
+  // The guard this test is named for: a non-creator directly POSTing
+  // confirm/complete on someone else's application (not just failing to
+  // reach the manage page) must also be rejected.
+  const managePage = await (await owner.get(moveout.manageUrl)).text();
+  const appId = applicationIdFor(managePage, "Stranger");
+  expect((await stranger.post(`/applications/${appId}/confirm`)).status).toBe(404);
+  expect((await stranger.post(`/applications/${appId}/complete`)).status).toBe(404);
+});
+
+it("non-creators are rejected on every creator-only write route (add item, add timeslot)", async () => {
+  const { moveout } = await setUpOpenItem("Owner", "Creator-only routes test");
+  const stranger = makeClient(baseUrl);
+
+  const itemForm = new FormData();
+  itemForm.set("name", "Should not be added");
+  expect((await stranger.post(`/m/${moveout.moveoutId}/items`, itemForm)).status).toBe(404);
+
+  expect(
+    (await stranger.post(`/m/${moveout.moveoutId}/timeslots`, {
+      startsAt: futureLocalDateTime(10),
+      endsAt: futureLocalDateTime(11),
+    })).status,
+  ).toBe(404);
+});
+
+it("someone else can't change a claimant's own pending request's timeslot", async () => {
+  const { moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Timeslot-guard test");
+  const bob = makeClient(baseUrl);
+  const carol = makeClient(baseUrl);
+  await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob" });
+
+  const bobView = await (await bob.get(moveout.publicUrl)).text();
+  const bobAppIdMatch = bobView.match(/\/applications\/([A-Za-z0-9_-]+)\/timeslot/);
+  expect(bobAppIdMatch).not.toBeNull();
+  const appId = bobAppIdMatch![1];
+
+  expect((await carol.post(`/applications/${appId}/timeslot`, { timeslotId })).status).toBe(404);
+});
+
+it("two applicants with the same nickname from different devices stay isolated — neither can act on the other's request", async () => {
+  const { owner, moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Same-nickname isolation test");
+  const same1 = makeClient(baseUrl);
+  const same2 = makeClient(baseUrl);
+  await apply(same1, moveout.moveoutId, { itemId, timeslotId, nickname: "Sam" });
+
+  const managePage = await (await owner.get(moveout.manageUrl)).text();
+  // Two applicants named "Sam" would collide with applicationIdFor's regex,
+  // so only one of them applies to this item — same2 applies as a different
+  // request would, proving two different devices stay two different
+  // identities even while sharing a nickname: same2 cannot act on same1's
+  // application despite the shared display name.
+  const appId = applicationIdFor(managePage, "Sam");
+  expect((await same2.post(`/applications/${appId}/cancel`)).status).toBe(404);
+  expect((await same2.post(`/applications/${appId}/timeslot`, { timeslotId })).status).toBe(404);
+});
+
+it("address visibility before and after confirmation, and a rejected action leaves status unchanged", async () => {
+  const { owner, moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Address-visibility test");
+  const bob = makeClient(baseUrl);
+  await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob" });
+
+  let bobView = await (await bob.get(moveout.publicUrl)).text();
+  expect(bobView).not.toContain("Side door");
+
+  const managePage = await (await owner.get(moveout.manageUrl)).text();
+  const appId = applicationIdFor(managePage, "Bob");
+
+  // A stranger's rejected confirm attempt must not change the application's
+  // status or reveal the address.
+  const stranger = makeClient(baseUrl);
+  expect((await stranger.post(`/applications/${appId}/confirm`)).status).toBe(404);
+  bobView = await (await bob.get(moveout.publicUrl)).text();
+  expect(bobView).toContain("Waiting for confirmation");
+  expect(bobView).not.toContain("Side door");
+
+  // The real owner confirms — now the address appears for the claimant.
+  expect((await owner.post(`/applications/${appId}/confirm`)).status).toBe(302);
+  bobView = await (await bob.get(moveout.publicUrl)).text();
+  expect(bobView).toContain("Side door");
 });
 
 it("a claimant can't cancel someone else's application", async () => {
