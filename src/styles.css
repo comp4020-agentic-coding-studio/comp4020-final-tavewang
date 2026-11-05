@@ -169,6 +169,19 @@ h2 {
   border-color: var(--accent);
 }
 
+.account-chip {
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
 main {
   max-width: 640px;
   margin: 0 auto;

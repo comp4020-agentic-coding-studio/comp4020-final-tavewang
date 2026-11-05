@@ -2,7 +2,7 @@ import { html } from "hono/html";
 import { layout } from "./layout.ts";
 import { formatInZone } from "../tz.ts";
 import { pickupArrangementCard } from "./pickup-card.ts";
-import { ITEM_CATEGORIES, type Application, type Item, type Moveout, type Timeslot } from "../db.ts";
+import { ITEM_CATEGORIES, type Account, type Application, type Item, type Moveout, type Timeslot } from "../db.ts";
 import type { PendingRescheduleView } from "../ownership.ts";
 
 function slotLabel(slot: Timeslot, timezone: string): string {
@@ -135,6 +135,7 @@ export async function moveoutManageView(
     withdrawnItems: Item[];
     timeslots: Timeslot[];
   },
+  account?: Account,
 ): Promise<string> {
   const tz = moveout.timezone;
   const body = html`
@@ -275,5 +276,5 @@ export async function moveoutManageView(
       });
     </script>
   `;
-  return layout(`${moveout.title} · manage`, body);
+  return layout(`${moveout.title} · manage`, body, account);
 }

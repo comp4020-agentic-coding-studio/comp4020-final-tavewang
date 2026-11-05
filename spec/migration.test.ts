@@ -180,3 +180,65 @@ it("a pre-existing application migrates to 'not_departed', and the reschedule ta
   expect(legacyApp.claimer_nickname).toBe("Legacy Claimer");
   db.close();
 });
+
+// Accounts: the database seeded in beforeAll predates accounts/sessions and
+// the *_account_id columns entirely (it's the pre-Crit-11 shape, migrated
+// forward through every intermediate round by the server's own startup
+// migration above, same as the reschedule columns were). This is what
+// proves a real production volume — one that's been live since before
+// accounts existed — upgrades cleanly: existing rows keep their device-only
+// identity (NULL account columns, not a guessed or backfilled one), new
+// tables exist and are queryable, and nothing about the legacy data changes.
+it("accounts/sessions tables exist and legacy rows have NULL account columns, not a guessed one", async () => {
+  const db = new DatabaseSync(join(dataDir, "moveout.db"));
+
+  // Tables exist and are queryable (would throw otherwise).
+  expect((db.prepare("SELECT COUNT(*) AS n FROM accounts").get() as { n: number }).n).toBe(0);
+  expect((db.prepare("SELECT COUNT(*) AS n FROM account_sessions").get() as { n: number }).n).toBe(0);
+
+  const moveout = db.prepare("SELECT creator_account_id FROM moveouts WHERE id = ?").get("legacy-moveout") as {
+    creator_account_id: string | null;
+  };
+  expect(moveout.creator_account_id).toBeNull();
+
+  const app = db.prepare("SELECT claimer_account_id FROM applications WHERE id = ?").get("legacy-app") as {
+    claimer_account_id: string | null;
+  };
+  expect(app.claimer_account_id).toBeNull();
+
+  // Legacy data still intact after this round's migration too.
+  const legacyMoveout = db.prepare("SELECT title FROM moveouts WHERE id = ?").get("legacy-moveout") as { title: string };
+  expect(legacyMoveout.title).toBe("Pre-Crit-11 Page");
+  db.close();
+});
+
+// A legacy page's creator can still register an account on the SAME device
+// that created it, and that one action both creates the account and links
+// the pre-existing page to it — proving the claim pass (src/auth.ts
+// #claimAnonymousDataForAccount) works against data that predates accounts
+// by several migrations, not just data created in the same session as the
+// test.
+it("the legacy move-out page's original device can register and claim it into a new account", async () => {
+  // Drives the register route directly with the exact `device` cookie value
+  // seedOldSchema() recorded as "legacy-moveout"'s creator_device_id — the
+  // real scenario this proves is "the original browser from years ago,
+  // which still has that cookie, registers today."
+  const res = await fetch(new URL("/register", baseUrl), {
+    method: "POST",
+    redirect: "manual",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: "device=legacy-device" },
+    body: new URLSearchParams({ email: "legacy-owner@example.com", password: "legacypassword1" }).toString(),
+  });
+  expect(res.status).toBe(200);
+  const body = await res.text();
+  expect(body).toContain("Linked");
+
+  const db = new DatabaseSync(join(dataDir, "moveout.db"));
+  const account = db.prepare("SELECT id FROM accounts WHERE email = ?").get("legacy-owner@example.com") as { id: string };
+  expect(account).toBeTruthy();
+  const moveout = db.prepare("SELECT creator_account_id FROM moveouts WHERE id = ?").get("legacy-moveout") as {
+    creator_account_id: string | null;
+  };
+  expect(moveout.creator_account_id).toBe(account.id);
+  db.close();
+});

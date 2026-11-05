@@ -11,7 +11,7 @@ itemRoutes.post("/items/:id/withdraw", (c) => {
   if (!item) return c.notFound();
   const moveout = getMoveout(item.moveout_id)!;
   const deviceId = c.get("deviceId");
-  if (!isCreator(moveout, deviceId)) {
+  if (!isCreator(moveout, deviceId, c.get("account")?.id)) {
     logEvent({ event: "item.withdraw", actor: deviceId, outcome: "denied", moveoutId: moveout.id, itemId: item.id, status: 404, reasonCode: "not_creator" });
     return c.notFound();
   }

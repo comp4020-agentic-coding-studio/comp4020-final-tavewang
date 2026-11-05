@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { db, withTransaction, type DepartureStatus, type Item, type Moveout, type Timeslot } from "../db.ts";
-import { getApplication, getItem, getMoveout, isCreator } from "../ownership.ts";
+import { getApplication, getItem, getMoveout, isClaimant, isCreator } from "../ownership.ts";
 import { notifyDevice, notifyMoveout, notifyPublicPool } from "../live.ts";
 import { logEvent } from "../log.ts";
 
@@ -36,7 +36,7 @@ applicationRoutes.post("/applications/:id/confirm", (c) => {
   const ctx = context(applicationId);
   if (!ctx) return c.notFound();
   const deviceId = c.get("deviceId");
-  if (!isCreator(ctx.moveout, deviceId)) {
+  if (!isCreator(ctx.moveout, deviceId, c.get("account")?.id)) {
     logEvent({ event: "application.confirm", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 404, reasonCode: "not_creator" });
     return c.notFound();
   }
@@ -111,15 +111,16 @@ applicationRoutes.post("/applications/:id/cancel", async (c) => {
   const deviceId = c.get("deviceId");
   const app = getApplication(applicationId)!;
 
-  const isClaimant = app.claimer_device_id === deviceId;
-  const isOwner = isCreator(ctx.moveout, deviceId);
-  if (!isClaimant && !isOwner) {
+  const accountId = c.get("account")?.id;
+  const claimantMatch = isClaimant(app, deviceId, accountId);
+  const isOwner = isCreator(ctx.moveout, deviceId, accountId);
+  if (!claimantMatch && !isOwner) {
     logEvent({ event: "application.cancel", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, affectedDevice: app.claimer_device_id, status: 404, reasonCode: "not_claimant_or_owner" });
     return c.notFound();
   }
 
   let reason: string | null = null;
-  if (isOwner && !isClaimant) {
+  if (isOwner && !claimantMatch) {
     // The creator can only cancel a CONFIRMED booking, and only with a
     // reason the claimant will see — a silent revocation isn't allowed.
     if (app.status !== "confirmed") {
@@ -157,14 +158,14 @@ applicationRoutes.post("/applications/:id/cancel", async (c) => {
     itemId: ctx.item.id,
     applicationId,
     affectedDevice: app.claimer_device_id,
-    reasonCode: isOwner && !isClaimant ? "cancelled_by_creator" : "cancelled_by_claimant",
+    reasonCode: isOwner && !claimantMatch ? "cancelled_by_creator" : "cancelled_by_claimant",
   });
   notifyMoveout(ctx.moveout.id);
   notifyDevice(app.claimer_device_id);
   // Cancelling a CONFIRMED booking reopens the item (CLAUDE.md) — it can
   // reappear in a public pool it had dropped out of.
   if (ctx.moveout.visibility === "public" && app.status === "confirmed") notifyPublicPool();
-  return isOwner && !isClaimant ? c.redirect(`/m/${ctx.moveout.id}/manage`) : c.redirect(`/m/${ctx.moveout.id}`);
+  return isOwner && !claimantMatch ? c.redirect(`/m/${ctx.moveout.id}/manage`) : c.redirect(`/m/${ctx.moveout.id}`);
 });
 
 applicationRoutes.post("/applications/:id/complete", (c) => {
@@ -172,7 +173,7 @@ applicationRoutes.post("/applications/:id/complete", (c) => {
   const ctx = context(applicationId);
   if (!ctx) return c.notFound();
   const deviceId = c.get("deviceId");
-  if (!isCreator(ctx.moveout, deviceId)) {
+  if (!isCreator(ctx.moveout, deviceId, c.get("account")?.id)) {
     logEvent({ event: "application.complete", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 404, reasonCode: "not_creator" });
     return c.notFound();
   }
@@ -207,7 +208,7 @@ applicationRoutes.post("/applications/:id/departure", async (c) => {
   if (!ctx) return c.notFound();
   const deviceId = c.get("deviceId");
   const app = getApplication(applicationId)!;
-  if (app.claimer_device_id !== deviceId) {
+  if (!isClaimant(app, deviceId, c.get("account")?.id)) {
     logEvent({ event: "application.departure", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 404, reasonCode: "not_claimant" });
     return c.notFound();
   }
@@ -242,7 +243,7 @@ applicationRoutes.post("/applications/:id/timeslot", async (c) => {
   if (!ctx) return c.notFound();
   const app = getApplication(applicationId)!;
   const deviceId = c.get("deviceId");
-  if (app.claimer_device_id !== deviceId) {
+  if (!isClaimant(app, deviceId, c.get("account")?.id)) {
     logEvent({ event: "application.timeslot", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 404, reasonCode: "not_claimant" });
     return c.notFound();
   }

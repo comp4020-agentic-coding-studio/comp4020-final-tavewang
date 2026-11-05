@@ -7,21 +7,34 @@ export interface Client {
 }
 
 export function makeClient(baseUrl: string): Client {
-  let cookie = "";
+  // A per-cookie-name map, not one joined string — a response can set
+  // several cookies at once (e.g. src/routes/auth.ts's register/login set
+  // BOTH `device` and `session` in the same response), and
+  // `Headers#get("set-cookie")` comma-joins every Set-Cookie header into one
+  // string that is NOT valid to replay as a single Cookie request header.
+  // `Headers#getSetCookie()` (Node's fetch, since it implements the
+  // multi-value Headers spec for this one header) returns them as a real
+  // array instead.
+  const cookies = new Map<string, string>();
 
   const request = async (method: string, path: string, data?: Record<string, string> | FormData): Promise<Response> => {
     const isForm = data instanceof FormData;
+    const cookieHeader = Array.from(cookies.entries()).map(([k, v]) => `${k}=${v}`).join("; ");
     const res = await fetch(new URL(path, baseUrl), {
       method,
       redirect: "manual",
       headers: {
-        ...(cookie ? { Cookie: cookie } : {}),
+        ...(cookieHeader ? { Cookie: cookieHeader } : {}),
         ...(data && !isForm ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
       },
       body: isForm ? data : data ? new URLSearchParams(data).toString() : undefined,
     });
-    const setCookie = res.headers.get("set-cookie");
-    if (setCookie) cookie = setCookie.split(";")[0];
+    for (const setCookie of res.headers.getSetCookie()) {
+      const [pair] = setCookie.split(";");
+      const eq = pair.indexOf("=");
+      if (eq === -1) continue;
+      cookies.set(pair.slice(0, eq), pair.slice(eq + 1));
+    }
     return res;
   };
 

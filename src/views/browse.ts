@@ -1,7 +1,7 @@
 import { html } from "hono/html";
 import { layout } from "./layout.ts";
 import { formatInZone } from "../tz.ts";
-import { ITEM_CATEGORIES, type ItemCategory } from "../db.ts";
+import { ITEM_CATEGORIES, type Account, type ItemCategory } from "../db.ts";
 import type { BrowseItemRow, BrowseSort } from "../ownership.ts";
 
 export interface BrowseState {
@@ -63,6 +63,7 @@ export async function browseView(
   items: BrowseItemRow[],
   total: number,
   state: BrowseState,
+  account?: Account,
 ): Promise<string> {
   const hasFilters = Boolean(state.search || state.category);
   const body = html`
@@ -123,5 +124,5 @@ export async function browseView(
 
     <script src="/live.js" data-live="/browse/events"></script>
   `;
-  return layout("Browse", body);
+  return layout("Browse", body, account);
 }

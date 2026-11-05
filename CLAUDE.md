@@ -27,6 +27,58 @@ not a quiet exception here.
   from two different devices is two different people — identity is always
   `(entity, device_id)`, never nickname.
 
+## Accounts (optional, layered on top of the device cookie)
+
+- An account (`src/auth.ts`, `src/routes/auth.ts`) is email + password,
+  entirely optional — a visitor who never registers behaves exactly as
+  before accounts existed. Accounts exist to answer one question the device
+  cookie alone can't: "how do I reach my pages/requests from a different
+  browser or device?" They are never a replacement for the device-cookie
+  identity, only an additional way to match it.
+- `moveouts.creator_account_id` and `applications.claimer_account_id` are
+  **nullable, additive** columns — NULL means "nobody's claimed this into an
+  account," never a gap to backfill or guess. Both are set only by
+  `src/auth.ts#claimAnonymousDataForAccount` (on register/login, scoped to
+  rows the signing-in device already owns) or at creation/apply time while
+  already signed in — never by anything a client sends directly.
+- Every ownership check in this app is widened the same way:
+  `src/ownership.ts#isCreator`/`#isClaimant` match on **device id OR signed-
+  in account id** — never device id alone once accounts exist. A route that
+  adds a new creator-only or claimant-only action must call these, not write
+  its own `=== deviceId` check, or it'll silently fail to recognise a
+  different device signed into the right account.
+- **This widening has to reach read paths too, not just write guards** — a
+  real bug found by browser-level testing: `GET /m/:id`'s "Your requests"
+  query was hand-written SQL that only matched `claimer_device_id`, so a
+  different device signed into the claimant's account could already
+  successfully POST a write (the guard was correctly widened) but could
+  never find the application id to act on through the rendered page, since
+  the list that would show it stayed device-scoped. Any new query that lists
+  "my own" pages or applications must OR in the account id the same way
+  `src/routes/moveout.ts`'s `myApps` query and
+  `src/ownership.ts#listMoveoutsCreatedByAccount` /
+  `#listApplicationsWithContextForAccount` do — a route or view that reads
+  without this half of the check will disagree with its own write-side
+  guard about who "the claimant" or "the creator" is.
+- `claimAnonymousDataForAccount` only ever claims a row whose
+  `*_account_id` is currently NULL or already equal to the account being
+  signed into — never a row another account has already claimed. Logging
+  into account B on a device that previously claimed data for account A
+  must not reassign A's data to B.
+- A session (`account_sessions`) is a server-side row, not a signed token —
+  the `session` cookie carries only this row's unguessable id. **Sign-out
+  deletes the row.** This is what makes logout an actual revocation rather
+  than asking the browser nicely to forget a cookie: the exact same cookie
+  value, replayed after logout, must resolve to "not signed in," indistinguishable
+  from a session id that never existed. Never implement logout by only
+  clearing the cookie client-side.
+- Passwords are hashed with `node:crypto`'s `scrypt` (`src/auth.ts#hashPassword`),
+  salted per-account, compared with `timingSafeEqual` — never stored
+  plaintext or reversibly encoded, never compared with `===`.
+- Login's rejection message is identical whether the email doesn't exist or
+  the password is wrong (`src/auth.ts#verifyLogin` returns `undefined` for
+  both) — never confirm which emails have an account.
+
 ## Public browse pool (final iteration)
 
 - `moveouts.visibility` (`public` / `unlisted`) is a separate concern from

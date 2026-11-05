@@ -3,7 +3,7 @@ import { layout } from "./layout.ts";
 import { applicationStatusLabel, itemStatusLabel } from "./status.ts";
 import { pickupArrangementCard } from "./pickup-card.ts";
 import { formatInZone } from "../tz.ts";
-import type { Application, Item, Moveout, Timeslot } from "../db.ts";
+import type { Account, Application, Item, Moveout, Timeslot } from "../db.ts";
 import type { PendingRescheduleView } from "../ownership.ts";
 
 // A neutral, inline placeholder for an item with no uploaded photo — see
@@ -142,6 +142,7 @@ export async function moveoutPublicView(
   validSlots: Timeslot[],
   myApplications: { app: Application; item: Item; confirmedTimeslot?: Timeslot; pending?: PendingRescheduleView }[],
   requestedItemIds: Set<string>,
+  account?: Account,
 ): Promise<string> {
   const body = html`
     <h1>${moveout.title}</h1>
@@ -173,14 +174,14 @@ export async function moveoutPublicView(
 
     <script src="/live.js" data-live="/m/${moveout.id}/events"></script>
   `;
-  return layout(moveout.title, body);
+  return layout(moveout.title, body, account);
 }
 
-export async function moveoutNotFoundView(): Promise<string> {
+export async function moveoutNotFoundView(account?: Account): Promise<string> {
   const body = html`
     <h1>This link isn't valid</h1>
     <p>The move-out page you're looking for doesn't exist, or the link is broken.</p>
     <p><a href="/">Go home</a></p>
   `;
-  return layout("Not found", body);
+  return layout("Not found", body, account);
 }

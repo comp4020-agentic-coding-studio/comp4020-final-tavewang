@@ -3,7 +3,12 @@ import { streamSSE } from "hono/streaming";
 import { db } from "../db.ts";
 import { newMoveoutId } from "../ids.ts";
 import { zonedDateTimeToUtc, isValidTimeZone } from "../tz.ts";
-import { listApplicationsWithContext, listMoveoutsCreatedBy } from "../ownership.ts";
+import {
+  listApplicationsWithContext,
+  listApplicationsWithContextForAccount,
+  listMoveoutsCreatedBy,
+  listMoveoutsCreatedByAccount,
+} from "../ownership.ts";
 import { notifyDevice, onDeviceChange, pumpSSE } from "../live.ts";
 import { mineView } from "../views/home.ts";
 import { logEvent } from "../log.ts";
@@ -25,13 +30,20 @@ homeRoutes.get("/events", (c) => {
 // requests regardless of what's trending in the public pool.
 homeRoutes.get("/mine", (c) => {
   const deviceId = c.get("deviceId");
-  const myMoveouts = listMoveoutsCreatedBy(deviceId);
-  const myApplications = listApplicationsWithContext(deviceId);
-  return c.html(mineView(myMoveouts, myApplications));
+  const account = c.get("account");
+  // Signed in: reach every page/request this ACCOUNT owns, from whichever
+  // device created them — this is the whole point of having an account, so
+  // a different device than the one that created something can still find
+  // and manage it. Anonymous: scoped to this device alone, same as before
+  // accounts existed.
+  const myMoveouts = account ? listMoveoutsCreatedByAccount(account.id) : listMoveoutsCreatedBy(deviceId);
+  const myApplications = account ? listApplicationsWithContextForAccount(account.id) : listApplicationsWithContext(deviceId);
+  return c.html(mineView(myMoveouts, myApplications, account));
 });
 
 homeRoutes.post("/moveouts", async (c) => {
   const deviceId = c.get("deviceId");
+  const account = c.get("account");
   const form = await c.req.formData();
   const title = String(form.get("title") ?? "").trim();
   const area = String(form.get("area") ?? "").trim();
@@ -46,23 +58,26 @@ homeRoutes.post("/moveouts", async (c) => {
 
   if (!title || !area || !pickupLocation || !nickname || !deadlineRaw) {
     return c.html(
-      mineView([], [], { error: "Every field is required to create a move-out page." }),
+      mineView([], [], account, { error: "Every field is required to create a move-out page." }),
       400,
     );
   }
   if (!isValidTimeZone(timezone)) {
-    return c.html(mineView([], [], { error: `"${timezone}" isn't a recognised timezone.` }), 400);
+    return c.html(mineView([], [], account, { error: `"${timezone}" isn't a recognised timezone.` }), 400);
   }
   const deadlineAt = zonedDateTimeToUtc(deadlineRaw, timezone);
   if (!deadlineAt) {
-    return c.html(mineView([], [], { error: "That deadline date/time isn't valid." }), 400);
+    return c.html(mineView([], [], account, { error: "That deadline date/time isn't valid." }), 400);
   }
 
   const id = newMoveoutId();
+  // Signed-in creation records creator_account_id right away — no need to
+  // wait for a later claim pass, since there's no anonymous period to claim
+  // from when the device was already signed in at creation time.
   db.prepare(
-    `INSERT INTO moveouts (id, title, area, pickup_location, deadline_at, timezone, creator_device_id, creator_nickname, visibility)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, title, area, pickupLocation, deadlineAt.toISOString(), timezone, deviceId, nickname, visibility);
+    `INSERT INTO moveouts (id, title, area, pickup_location, deadline_at, timezone, creator_device_id, creator_nickname, visibility, creator_account_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, title, area, pickupLocation, deadlineAt.toISOString(), timezone, deviceId, nickname, visibility, account?.id ?? null);
   logEvent({ event: "moveout.create", actor: deviceId, outcome: "success", moveoutId: id, reasonCode: visibility });
 
   // So another already-open tab on this same device ("My MoveOut"'s "Your

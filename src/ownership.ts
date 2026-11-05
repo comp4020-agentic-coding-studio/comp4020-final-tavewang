@@ -4,8 +4,27 @@ export function getMoveout(id: string): Moveout | undefined {
   return db.prepare("SELECT * FROM moveouts WHERE id = ?").get(id) as Moveout | undefined;
 }
 
-export function isCreator(moveout: Moveout, deviceId: string): boolean {
-  return moveout.creator_device_id === deviceId;
+// Matches if either the requester's device created the page (the original,
+// account-free rule) OR the requester is signed into the account that owns
+// it (`accountId`, from `c.get("account")?.id` — undefined for an anonymous
+// visitor, which never matches a non-null `creator_account_id`). This is
+// what lets a different device, once signed into the same account, manage a
+// page it didn't itself create — CLAUDE.md's device-identity rule still
+// holds for the anonymous case; accounts only ever widen this check, never
+// replace or weaken it.
+export function isCreator(moveout: Moveout, deviceId: string, accountId?: string): boolean {
+  if (moveout.creator_device_id === deviceId) return true;
+  return accountId !== undefined && moveout.creator_account_id === accountId;
+}
+
+// Same device-OR-account widening as isCreator, for "is this requester the
+// claimant on this specific application" — the other half of every
+// creator/claimant pair in this app. A claimant who registers or signs in
+// on a second device can act on their own request from there exactly as if
+// it were the original device.
+export function isClaimant(app: Application, deviceId: string, accountId?: string): boolean {
+  if (app.claimer_device_id === deviceId) return true;
+  return accountId !== undefined && app.claimer_account_id === accountId;
 }
 
 export function getItem(id: string): Item | undefined {
@@ -96,10 +115,39 @@ export function listApplicationsWithContext(deviceId: string): ApplicationWithCo
     .all(deviceId) as unknown as ApplicationWithContext[];
 }
 
+// Account-scoped equivalent of listApplicationsWithContext — every request
+// sent by ANY device this account has claimed data on, same reasoning as
+// listMoveoutsCreatedByAccount above.
+export function listApplicationsWithContextForAccount(accountId: string): ApplicationWithContext[] {
+  return db
+    .prepare(
+      `SELECT a.*, i.name AS item_name, m.id AS moveout_id, m.title AS moveout_title,
+              m.timezone AS moveout_timezone, t.starts_at AS timeslot_starts_at
+       FROM applications a
+       JOIN items i ON i.id = a.item_id
+       JOIN moveouts m ON m.id = i.moveout_id
+       JOIN timeslots t ON t.id = a.timeslot_id
+       WHERE a.claimer_account_id = ?
+       ORDER BY a.created_at DESC`,
+    )
+    .all(accountId) as unknown as ApplicationWithContext[];
+}
+
 export function listMoveoutsCreatedBy(deviceId: string): Moveout[] {
   return db
     .prepare("SELECT * FROM moveouts WHERE creator_device_id = ? ORDER BY created_at DESC")
     .all(deviceId) as unknown as Moveout[];
+}
+
+// Account-scoped: every page created by ANY device this account has signed
+// into and claimed data on — this is what makes "log in on a new device"
+// actually reach a page made on an old one. `creator_account_id` is only
+// ever set by src/auth.ts#claimAnonymousDataForAccount or at creation time
+// while already signed in, never by anything a client sends directly.
+export function listMoveoutsCreatedByAccount(accountId: string): Moveout[] {
+  return db
+    .prepare("SELECT * FROM moveouts WHERE creator_account_id = ? ORDER BY created_at DESC")
+    .all(accountId) as unknown as Moveout[];
 }
 
 // ---- Crit 11: the public browse pool -------------------------------------

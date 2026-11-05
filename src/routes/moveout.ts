@@ -18,9 +18,9 @@ function shareUrlFor(c: Context, moveoutId: string): string {
 
 moveoutRoutes.get("/m/:id", (c) => {
   const moveout = getMoveout(c.req.param("id"));
-  if (!moveout) return c.html(moveoutNotFoundView(), 404);
+  if (!moveout) return c.html(moveoutNotFoundView(c.get("account")), 404);
   const deviceId = c.get("deviceId");
-  if (isCreator(moveout, deviceId)) return c.redirect(`/m/${moveout.id}/manage`);
+  if (isCreator(moveout, deviceId, c.get("account")?.id)) return c.redirect(`/m/${moveout.id}/manage`);
 
   const allItems = listItems(moveout.id);
   const items = allItems.filter((i) => i.status !== "withdrawn");
@@ -29,12 +29,22 @@ moveoutRoutes.get("/m/:id", (c) => {
     (s) => s.starts_at > now && s.starts_at <= moveout.deadline_at,
   );
 
+  const accountId = c.get("account")?.id ?? null;
+  // Widened the same way every write-side claimant check is (isClaimant,
+  // src/ownership.ts): this device's own applications, OR — when signed
+  // in — every application tied to this account regardless of which device
+  // actually sent it. Without the account half of this OR, a different
+  // device signed into the account could still POST a write (the route
+  // guards already check isClaimant) but would never see "Your requests"
+  // render it, since the write-permission check and this read query would
+  // silently disagree about who the claimant is.
   const myApps = db
     .prepare(
       `SELECT a.* FROM applications a JOIN items i ON i.id = a.item_id
-       WHERE i.moveout_id = ? AND a.claimer_device_id = ? ORDER BY a.created_at DESC`,
+       WHERE i.moveout_id = ? AND (a.claimer_device_id = ? OR (? IS NOT NULL AND a.claimer_account_id = ?))
+       ORDER BY a.created_at DESC`,
     )
-    .all(moveout.id, deviceId) as unknown as Application[];
+    .all(moveout.id, deviceId, accountId, accountId) as unknown as Application[];
   // Resolved against the FULL item list, not the public (withdrawn-excluded)
   // one — a claimant's own application history (including "cancelled
   // because the item was withdrawn") should still show up for them even
@@ -56,14 +66,14 @@ moveoutRoutes.get("/m/:id", (c) => {
     myApps.filter((a) => a.status === "pending" || a.status === "confirmed").map((a) => a.item_id),
   );
 
-  return c.html(moveoutPublicView(moveout, items, validSlots, myApplications, requestedItemIds));
+  return c.html(moveoutPublicView(moveout, items, validSlots, myApplications, requestedItemIds, c.get("account")));
 });
 
 moveoutRoutes.get("/m/:id/manage", (c) => {
   const moveout = getMoveout(c.req.param("id"));
-  if (!moveout) return c.html(moveoutNotFoundView(), 404);
+  if (!moveout) return c.html(moveoutNotFoundView(c.get("account")), 404);
   const deviceId = c.get("deviceId");
-  if (!isCreator(moveout, deviceId)) return c.html(moveoutNotFoundView(), 403);
+  if (!isCreator(moveout, deviceId, c.get("account")?.id)) return c.html(moveoutNotFoundView(c.get("account")), 403);
 
   const items = listItems(moveout.id);
   const timeslots = listTimeslots(moveout.id);
@@ -135,13 +145,18 @@ moveoutRoutes.get("/m/:id/manage", (c) => {
   const withdrawnItems = items.filter((i) => i.status === "withdrawn");
 
   return c.html(
-    moveoutManageView(moveout, shareUrlFor(c, moveout.id), {
-      openItems,
-      upcoming,
-      completed,
-      withdrawnItems,
-      timeslots,
-    }),
+    moveoutManageView(
+      moveout,
+      shareUrlFor(c, moveout.id),
+      {
+        openItems,
+        upcoming,
+        completed,
+        withdrawnItems,
+        timeslots,
+      },
+      c.get("account"),
+    ),
   );
 });
 
@@ -149,7 +164,7 @@ moveoutRoutes.post("/m/:id/visibility", async (c) => {
   const moveout = getMoveout(c.req.param("id"));
   if (!moveout) return c.notFound();
   const deviceId = c.get("deviceId");
-  if (!isCreator(moveout, deviceId)) {
+  if (!isCreator(moveout, deviceId, c.get("account")?.id)) {
     logEvent({ event: "moveout.visibility", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 404, reasonCode: "not_creator" });
     return c.notFound();
   }
@@ -185,7 +200,7 @@ moveoutRoutes.post("/m/:id/items", async (c) => {
   const moveout = getMoveout(c.req.param("id"));
   if (!moveout) return c.notFound();
   const deviceId = c.get("deviceId");
-  if (!isCreator(moveout, deviceId)) {
+  if (!isCreator(moveout, deviceId, c.get("account")?.id)) {
     logEvent({ event: "item.add", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 404, reasonCode: "not_creator" });
     return c.notFound();
   }
@@ -223,7 +238,7 @@ moveoutRoutes.post("/m/:id/timeslots", async (c) => {
   const moveout = getMoveout(c.req.param("id"));
   if (!moveout) return c.notFound();
   const deviceId = c.get("deviceId");
-  if (!isCreator(moveout, deviceId)) {
+  if (!isCreator(moveout, deviceId, c.get("account")?.id)) {
     logEvent({ event: "timeslot.add", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 404, reasonCode: "not_creator" });
     return c.notFound();
   }
@@ -254,7 +269,7 @@ moveoutRoutes.post("/m/:id/apply", async (c) => {
   const moveout = getMoveout(c.req.param("id"));
   if (!moveout) return c.notFound();
   const deviceId = c.get("deviceId");
-  if (isCreator(moveout, deviceId)) {
+  if (isCreator(moveout, deviceId, c.get("account")?.id)) {
     logEvent({ event: "application.apply", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 400, reasonCode: "self_request" });
     return c.text("You can't request your own item.", 400);
   }
@@ -288,11 +303,12 @@ moveoutRoutes.post("/m/:id/apply", async (c) => {
   }
 
   const applicationId = newId();
+  const accountId = c.get("account")?.id ?? null;
   try {
     db.prepare(
-      `INSERT INTO applications (id, item_id, timeslot_id, claimer_device_id, claimer_nickname, note)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(applicationId, item.id, timeslot.id, deviceId, nickname, note);
+      `INSERT INTO applications (id, item_id, timeslot_id, claimer_device_id, claimer_nickname, note, claimer_account_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(applicationId, item.id, timeslot.id, deviceId, nickname, note, accountId);
   } catch (err) {
     // Only the partial unique index (applications_one_active_per_device)
     // means "an active request from this device already exists for this

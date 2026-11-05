@@ -15,6 +15,7 @@ import { itemRoutes } from "./routes/items.ts";
 import { applicationRoutes } from "./routes/applications.ts";
 import { rescheduleRoutes } from "./routes/reschedule.ts";
 import { browseRoutes } from "./routes/browse.ts";
+import { authRoutes } from "./routes/auth.ts";
 
 const app = new Hono();
 app.use("*", deviceMiddleware);
@@ -60,8 +61,9 @@ app.route("/", moveoutRoutes);
 app.route("/", itemRoutes);
 app.route("/", applicationRoutes);
 app.route("/", rescheduleRoutes);
+app.route("/", authRoutes);
 
-app.notFound((c) => c.html(layout("Not found", html`<h1>Not found</h1><p><a href="/">Go home</a></p>`), 404));
+app.notFound((c) => c.html(layout("Not found", html`<h1>Not found</h1><p><a href="/">Go home</a></p>`, c.get("account")), 404));
 
 const port = Number(process.env.PORT ?? 8080);
 serve({ fetch: app.fetch, port, hostname: "0.0.0.0" }, (info) => {

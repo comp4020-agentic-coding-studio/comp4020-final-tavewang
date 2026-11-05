@@ -25,7 +25,7 @@ browseRoutes.get("/", (c) => {
   const total = countBrowseItems(query);
   const items = listBrowseItems(query);
 
-  return c.html(browseView(items, total, { search, category, sort }));
+  return c.html(browseView(items, total, { search, category, sort }, c.get("account")));
 });
 
 // Same shape as the per-moveout and per-device streams (src/live.ts): no

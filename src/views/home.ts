@@ -2,7 +2,7 @@ import { html } from "hono/html";
 import { layout } from "./layout.ts";
 import { applicationStatusLabel } from "./status.ts";
 import { formatInZone } from "../tz.ts";
-import type { Moveout } from "../db.ts";
+import type { Account, Moveout } from "../db.ts";
 import type { ApplicationWithContext } from "../ownership.ts";
 
 // "My MoveOut": the creator/claimant management home, as it was before Crit
@@ -12,6 +12,7 @@ import type { ApplicationWithContext } from "../ownership.ts";
 export async function mineView(
   myMoveouts: Moveout[],
   myApplications: ApplicationWithContext[],
+  account: Account | undefined,
   opts: { error?: string } = {},
 ): Promise<string> {
   const body = html`
@@ -19,8 +20,12 @@ export async function mineView(
     <p id="connection-status" class="conn-status" role="status" aria-live="polite" hidden></p>
     <p class="lede">The move-out pages you've created, and the requests you've sent.</p>
     <p class="muted">
-      This browser remembers who you are; clearing its cookies or switching
-      browsers loses that identity, with no way to recover it.
+      ${account
+        ? html`Signed in as ${account.email} — log in with this account on another device to reach these same pages and requests.`
+        : html`This browser remembers who you are; clearing its cookies or switching
+            browsers loses that identity. <a href="/register">Register</a> or
+            <a href="/login">log in</a> to reach your pages and requests from
+            another device instead.`}
     </p>
     ${opts.error ? html`<p class="error" role="alert">${opts.error}</p>` : ""}
     <section data-live-section="my-moveouts" ${myMoveouts.length === 0 ? "hidden" : ""}>
@@ -101,5 +106,5 @@ export async function mineView(
 
     <script src="/live.js" data-live="/events"></script>
   `;
-  return layout("My MoveOut", body);
+  return layout("My MoveOut", body, account);
 }

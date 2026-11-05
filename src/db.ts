@@ -15,6 +15,12 @@ export interface Moveout {
   creator_nickname: string;
   visibility: Visibility;
   created_at: string;
+  // Nullable: most pages still belong to an anonymous device only. Set once
+  // the creating device is signed in, at creation time or by the one-time
+  // claim-on-login pass (src/auth.ts#claimAnonymousDataForAccount) — never
+  // cleared back to NULL once set, since "this page belongs to account X"
+  // is a one-way fact once true.
+  creator_account_id: string | null;
 }
 
 export interface Timeslot {
@@ -82,6 +88,35 @@ export interface Application {
   cancel_reason: string | null;
   completed_at: string | null;
   created_at: string;
+  // Same nullable, one-way-settable shape as moveouts.creator_account_id —
+  // see that field's comment.
+  claimer_account_id: string | null;
+}
+
+// An account is an email + password credential that a device can sign into,
+// layered ON TOP OF the existing device-cookie identity — never a
+// replacement for it. A visitor who never registers behaves exactly as
+// before. `password_hash` is scrypt output, never a plaintext password or a
+// reversible encoding of one (CLAUDE.md-style rule: never store what you
+// wouldn't want to see in a leak).
+export interface Account {
+  id: string;
+  email: string;
+  password_hash: string;
+  created_at: string;
+}
+
+// A server-side, revocable login session — the cookie carries only this
+// row's unguessable id, never the account id or password hash directly, so
+// "sign out" (deleting the row) makes that cookie value immediately useless
+// even if an attacker already has it. Session rows, like src/live.ts's
+// in-memory subscriber lists, are transport/auth state, but UNLIKE those —
+// a revoked session must survive a server restart, so this one lives in
+// SQLite, not memory.
+export interface AccountSession {
+  id: string;
+  account_id: string;
+  created_at: string;
 }
 
 // A proposal to move a CONFIRMED booking to a different timeslot already on
@@ -95,6 +130,7 @@ export interface RescheduleProposal {
   id: string;
   application_id: string;
   proposed_by_device_id: string;
+  proposed_by_account_id: string | null;
   new_timeslot_id: string;
   reason: string | null;
   status: RescheduleStatus;
@@ -177,6 +213,20 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS accounts (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS account_sessions (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS account_sessions_account_idx ON account_sessions (account_id);
+
   CREATE INDEX IF NOT EXISTS items_moveout_idx ON items (moveout_id, status);
   CREATE INDEX IF NOT EXISTS applications_item_idx ON applications (item_id, status);
 
@@ -251,6 +301,23 @@ if (!hasColumn("applications", "departure_status")) {
   );
 }
 
+// Accounts: two additive, nullable columns linking a moveout/application
+// back to the account that owns the device that created/claimed it — never
+// a replacement for the existing *_device_id columns, which remain the
+// source of truth for "whose browser did this." A pre-existing row has
+// NULL here (nobody claimed it into an account yet), which is correct, not
+// a gap to backfill: there's no account to guess it into.
+if (!hasColumn("moveouts", "creator_account_id")) {
+  db.exec("ALTER TABLE moveouts ADD COLUMN creator_account_id TEXT REFERENCES accounts(id)");
+}
+if (!hasColumn("applications", "claimer_account_id")) {
+  db.exec("ALTER TABLE applications ADD COLUMN claimer_account_id TEXT REFERENCES accounts(id)");
+}
+db.exec(`
+  CREATE INDEX IF NOT EXISTS moveouts_creator_account_idx ON moveouts (creator_account_id);
+  CREATE INDEX IF NOT EXISTS applications_claimer_account_idx ON applications (claimer_account_id);
+`);
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS reschedule_proposals (
     id TEXT PRIMARY KEY,
@@ -272,6 +339,15 @@ db.exec(`
     ON reschedule_proposals (application_id)
     WHERE status = 'pending';
 `);
+
+// reschedule_proposals already existed before accounts, so its own
+// account_id column needs the same ALTER-after-CREATE treatment as
+// moveouts/applications above, not a column baked into the CREATE TABLE —
+// that statement above runs unconditionally every startup and would error
+// re-adding a column SQLite already added on a previous run.
+if (!hasColumn("reschedule_proposals", "proposed_by_account_id")) {
+  db.exec("ALTER TABLE reschedule_proposals ADD COLUMN proposed_by_account_id TEXT REFERENCES accounts(id)");
+}
 
 // Wraps a set of statements in a transaction. Node's single-threaded event
 // loop plus node:sqlite's synchronous calls mean no other request's
