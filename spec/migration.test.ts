@@ -153,3 +153,30 @@ it("running the migration logic again against the same database is a no-op, not 
   expect(moveout.visibility).toBe("unlisted");
   db.close();
 });
+
+// Final-project pickup upgrade: the database seeded in beforeAll predates
+// departure_status and reschedule_proposals entirely (it's the pre-Crit-11
+// shape). The server's own startup migration (not this test file reaching
+// in by hand) is what has to add them without touching the legacy rows
+// above — proving the new migration is exactly as additive and re-runnable
+// as the Crit 11 ones it sits beside.
+it("a pre-existing application migrates to 'not_departed', and the reschedule table exists, with all legacy data intact", async () => {
+  const db = new DatabaseSync(join(dataDir, "moveout.db"));
+  const app = db.prepare("SELECT departure_status FROM applications WHERE id = ?").get("legacy-app") as {
+    departure_status: string;
+  };
+  expect(app.departure_status).toBe("not_departed");
+
+  // Table exists and is queryable (would throw if the migration hadn't run).
+  const count = db.prepare("SELECT COUNT(*) AS n FROM reschedule_proposals").get() as { n: number };
+  expect(count.n).toBe(0);
+
+  // Legacy data untouched by this migration.
+  const legacyApp = db.prepare("SELECT status, claimer_nickname FROM applications WHERE id = ?").get("legacy-app") as {
+    status: string;
+    claimer_nickname: string;
+  };
+  expect(legacyApp.status).toBe("completed");
+  expect(legacyApp.claimer_nickname).toBe("Legacy Claimer");
+  db.close();
+});

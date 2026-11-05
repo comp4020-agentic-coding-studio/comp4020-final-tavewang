@@ -207,7 +207,32 @@
 
     if (oldEl.dataset.itemId) syncItemAvailability(oldEl, newEl.dataset.itemStatus);
     if (oldEl.dataset.applicationId) syncApplicationStatus(oldEl, newEl);
+    syncPickupCard(oldEl, newEl);
     reconcileSelects(oldEl, newEl);
+  }
+
+  // The pickup arrangement card (src/views/pickup-card.ts) is mostly
+  // read-only facts — confirmed time, location, the claimant's travel
+  // status, any pending reschedule — refreshed as one block since its shape
+  // changes qualitatively (a reschedule proposal appearing/disappearing).
+  // But it also contains the "Propose a different pickup time" <details>,
+  // with its own reason text input and timeslot <select> — a genuine draft
+  // a person can be mid-typing, exactly like any other open sub-form
+  // elsewhere on this page. Replacing the whole card out from under that
+  // would silently clear it, so this skips the swap (same as reconcileList
+  // skipping a protected entity entirely) whenever isProtected finds a draft
+  // inside this specific card — not just inside oldEl as a whole, since
+  // oldEl here is the much larger application card, which patchSafeBits
+  // still wants to badge-update even while this smaller part is guarded.
+  function syncPickupCard(oldEl, newEl) {
+    const oldCard = oldEl.querySelector(".pickup-card");
+    const newCard = newEl.querySelector ? newEl.querySelector(".pickup-card") : null;
+    if (!oldCard || !newCard) return;
+    if (oldCard.outerHTML === newCard.outerHTML) return;
+    if (isProtected(oldCard)) return;
+    const fresh = document.importNode(newCard, true);
+    enhanceForms(fresh);
+    oldCard.replaceWith(fresh);
   }
 
   // Bug fix (crit-9 review): previously an application card's status badge

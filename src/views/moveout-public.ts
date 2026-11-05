@@ -1,8 +1,10 @@
 import { html } from "hono/html";
 import { layout } from "./layout.ts";
 import { applicationStatusLabel, itemStatusLabel } from "./status.ts";
+import { pickupArrangementCard } from "./pickup-card.ts";
 import { formatInZone } from "../tz.ts";
 import type { Application, Item, Moveout, Timeslot } from "../db.ts";
+import type { PendingRescheduleView } from "../ownership.ts";
 
 // A neutral, inline placeholder for an item with no uploaded photo — see
 // src/views/browse.ts for the identical one used in the pool; kept as two
@@ -22,7 +24,14 @@ function timeslotLabel(slot: Timeslot, timezone: string): string {
   }).format(new Date(slot.ends_at))}`;
 }
 
-function myRequestCard(app: Application, item: Item, moveout: Moveout, validSlots: Timeslot[]) {
+function myRequestCard(
+  app: Application,
+  item: Item,
+  moveout: Moveout,
+  validSlots: Timeslot[],
+  confirmedTimeslot: Timeslot | undefined,
+  pending: PendingRescheduleView | undefined,
+) {
   const label = applicationStatusLabel(app);
   return html`
     <li class="item-card tone-${app.status === "confirmed" ? "active" : app.status === "pending" ? "pending" : "closed"}" data-application-id="${app.id}" data-application-status="${app.status}">
@@ -30,8 +39,8 @@ function myRequestCard(app: Application, item: Item, moveout: Moveout, validSlot
         <p class="item-name">${item.name}</p>
         <p class="item-badge">${label}</p>
         ${app.note ? html`<p class="item-meta">Your note: ${app.note}</p>` : ""}
-        ${app.status === "confirmed"
-          ? html`<p class="item-meta" data-pickup-spot><strong>Pickup spot:</strong> ${moveout.pickup_location}</p>`
+        ${app.status === "confirmed" && confirmedTimeslot
+          ? pickupArrangementCard(app, moveout, confirmedTimeslot, validSlots, pending, "claimant")
           : ""}
       </div>
       <div class="item-actions">
@@ -131,7 +140,7 @@ export async function moveoutPublicView(
   moveout: Moveout,
   items: Item[],
   validSlots: Timeslot[],
-  myApplications: { app: Application; item: Item }[],
+  myApplications: { app: Application; item: Item; confirmedTimeslot?: Timeslot; pending?: PendingRescheduleView }[],
   requestedItemIds: Set<string>,
 ): Promise<string> {
   const body = html`
@@ -147,7 +156,9 @@ export async function moveoutPublicView(
       <ul class="item-list" data-live-list="my-requests">
         ${myApplications.length === 0
           ? emptyPlaceholder("")
-          : myApplications.map(({ app, item }) => myRequestCard(app, item, moveout, validSlots))}
+          : myApplications.map(({ app, item, confirmedTimeslot, pending }) =>
+              myRequestCard(app, item, moveout, validSlots, confirmedTimeslot, pending),
+            )}
       </ul>
     </section>
 

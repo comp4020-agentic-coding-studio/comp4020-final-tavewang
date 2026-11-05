@@ -13,6 +13,7 @@ import { homeRoutes } from "./routes/home.ts";
 import { moveoutRoutes } from "./routes/moveout.ts";
 import { itemRoutes } from "./routes/items.ts";
 import { applicationRoutes } from "./routes/applications.ts";
+import { rescheduleRoutes } from "./routes/reschedule.ts";
 import { browseRoutes } from "./routes/browse.ts";
 
 const app = new Hono();
@@ -58,6 +59,7 @@ app.route("/", homeRoutes);
 app.route("/", moveoutRoutes);
 app.route("/", itemRoutes);
 app.route("/", applicationRoutes);
+app.route("/", rescheduleRoutes);
 
 app.notFound((c) => c.html(layout("Not found", html`<h1>Not found</h1><p><a href="/">Go home</a></p>`), 404));
 

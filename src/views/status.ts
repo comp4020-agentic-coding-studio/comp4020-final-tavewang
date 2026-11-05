@@ -1,4 +1,4 @@
-import type { Application, Item } from "../db.ts";
+import type { Application, DepartureStatus, Item } from "../db.ts";
 
 // Status is always rendered as text (never colour alone) — these are the
 // canonical labels used everywhere an item or application appears.
@@ -28,6 +28,17 @@ export function applicationStatusLabel(app: Application): string {
       return app.cancel_reason ? `Cancelled by the mover: ${app.cancel_reason}` : "You cancelled this request";
     case "completed":
       return "Picked up";
+  }
+}
+
+export function departureStatusLabel(status: DepartureStatus): string {
+  switch (status) {
+    case "not_departed":
+      return "Not yet on the way";
+    case "departed":
+      return "On the way";
+    case "arrived":
+      return "Arrived";
   }
 }
 

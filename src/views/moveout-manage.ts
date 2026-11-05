@@ -1,7 +1,9 @@
 import { html } from "hono/html";
 import { layout } from "./layout.ts";
 import { formatInZone } from "../tz.ts";
+import { pickupArrangementCard } from "./pickup-card.ts";
 import { ITEM_CATEGORIES, type Application, type Item, type Moveout, type Timeslot } from "../db.ts";
+import type { PendingRescheduleView } from "../ownership.ts";
 
 function slotLabel(slot: Timeslot, timezone: string): string {
   return formatInZone(slot.starts_at, timezone);
@@ -23,6 +25,8 @@ export interface UpcomingEntry {
   item: Item;
   timeslot: Timeslot;
   waitlist: PendingEntry[];
+  validSlotsForReschedule: Timeslot[];
+  pendingReschedule: PendingRescheduleView | undefined;
 }
 
 export interface CompletedEntry {
@@ -70,13 +74,14 @@ function openItemCard(entry: OpenItemEntry, timezone: string) {
   `;
 }
 
-function upcomingCard(entry: UpcomingEntry, timezone: string) {
+function upcomingCard(entry: UpcomingEntry, timezone: string, moveout: Moveout) {
   return html`
     <li class="item-card tone-active" data-application-id="${entry.app.id}">
       <div class="item-main">
         <p class="item-name">${entry.item.name}</p>
-        <p class="item-meta">${entry.app.claimer_nickname} · ${slotLabel(entry.timeslot, timezone)}</p>
+        <p class="item-meta">${entry.app.claimer_nickname}</p>
         ${entry.app.note ? html`<p class="item-meta">Note: ${entry.app.note}</p>` : ""}
+        ${pickupArrangementCard(entry.app, moveout, entry.timeslot, entry.validSlotsForReschedule, entry.pendingReschedule, "creator")}
         ${entry.waitlist.length > 0
           ? html`<p class="muted">${entry.waitlist.length} more waiting if this falls through:</p>
               <ul class="applicant-list">${entry.waitlist.map((p) => pendingRow(p, timezone, false))}</ul>`
@@ -226,7 +231,7 @@ export async function moveoutManageView(
     <section>
       <h2>Upcoming hand-offs</h2>
       <ul class="item-list" data-live-list="upcoming">
-        ${data.upcoming.length === 0 ? emptyItem("Nothing confirmed yet.") : data.upcoming.map((e) => upcomingCard(e, tz))}
+        ${data.upcoming.length === 0 ? emptyItem("Nothing confirmed yet.") : data.upcoming.map((e) => upcomingCard(e, tz, moveout))}
       </ul>
     </section>
 

@@ -18,10 +18,11 @@ Good means finding and completing a handover with clear expectations and little 
 - **Cancellation leaves a way forward.** Cancelling a booking reopens the item, including back into the pool, with no automatic promotion of the next applicant.
 - **Details are handled carefully.** Recipients get the exact pickup address only after confirmation; a public card shows only the item's name, category, area and deadline — never an address, nickname or note.
 - **Shared changes preserve personal input.** Updates to Browse, a move-out page, or a pending request land within about a second without clearing a search box, a draft, or a confirmed selection.
+- **A confirmed pickup stays a two-way arrangement.** Either side can propose a different time; the other side has to agree before it moves, and the original time holds until they do. The claimant's own travel status is theirs to set and correct, visible to the mover, and never doubles as "handed over" — that's still a separate, mover-only action.
 
 ## Scope and trade-offs
 
-MoveOut supports photos, categories, pickup windows, requests, confirmation, cancellation, completion, and now visibility and public discovery. SSE triggers updates through the existing authorised routes; forms also work without JavaScript. Account recovery is unsupported — clearing cookies or changing devices loses that identity. The transport assumes one server process. Payments, delivery, bidding, chat, ratings, a presence list, and a recommendation feed stay out of scope — Browse finds things by typing and clicking a category, nothing more.
+MoveOut supports photos, categories, pickup windows, requests, confirmation, cancellation, completion, visibility and public discovery, and — once confirmed — a full pickup arrangement: the agreed time and place, the claimant's own travel status (not yet on the way / on the way / arrived), and a mutual reschedule that either side can propose and the other must accept before it's binding. SSE triggers updates through the existing authorised routes; forms also work without JavaScript. Account recovery is unsupported — clearing cookies or changing devices loses that identity. The transport assumes one server process. Email notification was considered for this round and deliberately deferred — no external mail service is configured here. Payments, delivery, bidding, chat, ratings, a presence list, a recommendation feed, and automatic waitlist promotion stay out of scope.
 
 ## Identity, permission and logging
 
@@ -29,7 +30,7 @@ A mover and recipients are told apart by a device cookie, not a typed nickname. 
 
 ## How the claims will be checked
 
-Tests cover ownership, address/note privacy (including inside the pool query), competing confirmations, visibility permission and lifecycle, migration safety for pre-existing data, same-nickname isolation, and the business log. Browser scripts cover visible updates, draft preservation, and the Browse discovery path end to end. [PROCESS.md](https://github.com/comp4020-agentic-coding-studio/comp4020-final-tavewang/blob/main/PROCESS.md) records evidence and remaining checks.
+Tests cover ownership, address/note privacy (including inside the pool query), competing confirmations, visibility permission and lifecycle, migration safety for pre-existing data, same-nickname isolation, the business log, and — this round — both-direction reschedule proposals, self-accept and third-party rejection, decline/withdraw, invalid-timeslot rejection, concurrent-propose and double-accept races, cancel-invalidating-a-pending-proposal, and departure-status permission and terminal-state rules. Browser scripts cover visible updates, draft preservation, and the Browse discovery path end to end; a real two-browser-context run also drove the full confirm → travel-status → reschedule → persistence path at both marking viewports. [PROCESS.md](https://github.com/comp4020-agentic-coding-studio/comp4020-final-tavewang/blob/main/PROCESS.md) records evidence and remaining checks.
 
 ## Running it
 

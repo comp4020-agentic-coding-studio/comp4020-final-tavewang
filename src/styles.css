@@ -424,6 +424,22 @@ section form > button[type="submit"]:hover {
   font-size: 0.89rem;
 }
 
+.pickup-card {
+  margin-top: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.reschedule-pending {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  background: var(--surface-raised);
+  border: 1px dashed var(--pending);
+  border-radius: var(--radius-sm);
+}
+
 .item-badge {
   display: inline-flex;
   align-items: center;

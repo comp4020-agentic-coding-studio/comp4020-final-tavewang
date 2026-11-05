@@ -125,6 +125,61 @@ export async function apply(
   });
 }
 
+// Sets up a move-out page with one item, two valid timeslots, and one
+// claimant's application confirmed against the first slot — the common
+// starting point for reschedule/departure-status tests, which all need a
+// CONFIRMED booking before anything in this round's brief applies.
+export async function setUpConfirmedBooking(
+  baseUrl: string,
+  opts: { ownerNickname?: string; claimantNickname?: string; title: string } = { title: "Confirmed booking test" },
+): Promise<{
+  owner: Client;
+  claimant: Client;
+  moveout: CreatedMoveout;
+  itemId: string;
+  slot1Id: string;
+  slot2Id: string;
+  applicationId: string;
+}> {
+  const owner = makeClient(baseUrl);
+  const claimant = makeClient(baseUrl);
+  const moveout = await createMoveout(owner, {
+    title: opts.title,
+    deadline: futureLocalDateTime(72),
+    nickname: opts.ownerNickname ?? "Owner",
+  });
+  await addTimeslot(owner, moveout.moveoutId, futureLocalDateTime(2), futureLocalDateTime(3));
+  await addTimeslot(owner, moveout.moveoutId, futureLocalDateTime(5), futureLocalDateTime(6));
+  const itemId = await addItem(owner, moveout.moveoutId, { name: "Confirmable Item" });
+
+  const publicPage = await (await claimant.get(moveout.publicUrl)).text();
+  const timeslotOptions = Array.from(
+    publicPage.matchAll(/<option value="([A-Za-z0-9_-]+)">/g),
+  ).map((m) => m[1]);
+  const slot1Id = timeslotOptions[0];
+  const slot2Id = timeslotOptions[1];
+
+  await apply(claimant, moveout.moveoutId, {
+    itemId,
+    timeslotId: slot1Id,
+    nickname: opts.claimantNickname ?? "Claimant",
+  });
+  const managePage = await (await owner.get(moveout.manageUrl)).text();
+  const applicationId = applicationIdFor(managePage, opts.claimantNickname ?? "Claimant");
+  const confirmRes = await owner.post(`/applications/${applicationId}/confirm`);
+  if (confirmRes.status !== 302) throw new Error(`confirm failed: ${confirmRes.status} ${await confirmRes.text()}`);
+
+  return { owner, claimant, moveout, itemId, slot1Id, slot2Id, applicationId };
+}
+
+// Scrapes a reschedule proposal's id from a page containing its pending
+// block (src/views/pickup-card.ts's data-reschedule-id).
+export function pendingRescheduleIdFrom(page: string): string {
+  const match = page.match(/data-reschedule-id="([A-Za-z0-9_-]+)"/);
+  if (!match) throw new Error("no pending reschedule proposal found on page");
+  return match[1];
+}
+
 // A claimant's OWN application id, read from their own "Your requests"
 // section of the public page (keyed by data-application-id, never by
 // nickname) — unlike applicationIdFor (which scrapes the manage page by

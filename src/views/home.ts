@@ -1,6 +1,7 @@
 import { html } from "hono/html";
 import { layout } from "./layout.ts";
 import { applicationStatusLabel } from "./status.ts";
+import { formatInZone } from "../tz.ts";
 import type { Moveout } from "../db.ts";
 import type { ApplicationWithContext } from "../ownership.ts";
 
@@ -47,6 +48,9 @@ export async function mineView(
                 <li data-application-id="${a.id}">
                   <a href="/m/${a.moveout_id}">${a.item_name}</a>
                   <span class="muted">— ${a.moveout_title} · ${applicationStatusLabel(a)}</span>
+                  ${a.status === "confirmed" && a.timeslot_starts_at
+                    ? html`<span class="muted"> · Pickup: ${formatInZone(a.timeslot_starts_at, a.moveout_timezone)}</span>`
+                    : ""}
                 </li>
               `,
             )}

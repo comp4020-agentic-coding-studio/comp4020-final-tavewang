@@ -1,4 +1,4 @@
-import { db, type Application, type Item, type ItemCategory, type Moveout } from "./db.ts";
+import { db, type Application, type Item, type ItemCategory, type Moveout, type RescheduleProposal } from "./db.ts";
 
 export function getMoveout(id: string): Moveout | undefined {
   return db.prepare("SELECT * FROM moveouts WHERE id = ?").get(id) as Moveout | undefined;
@@ -32,6 +32,36 @@ export function listApplicationsForItem(itemId: string): Application[] {
     .all(itemId) as unknown as Application[];
 }
 
+export function getPendingReschedule(applicationId: string): RescheduleProposal | undefined {
+  return db
+    .prepare("SELECT * FROM reschedule_proposals WHERE application_id = ? AND status = 'pending'")
+    .get(applicationId) as RescheduleProposal | undefined;
+}
+
+export function getReschedule(id: string): RescheduleProposal | undefined {
+  return db.prepare("SELECT * FROM reschedule_proposals WHERE id = ?").get(id) as RescheduleProposal | undefined;
+}
+
+export interface PendingRescheduleView {
+  proposal: RescheduleProposal;
+  newTimeslot: import("./db.ts").Timeslot;
+  proposedByCreator: boolean;
+}
+
+// Resolved view of an application's one-or-zero pending reschedule, for
+// rendering on either side (the creator's manage page or the claimant's own
+// public page) — both need the same facts: who proposed, the candidate new
+// time, and the reason.
+export function pendingRescheduleView(applicationId: string, moveout: Moveout): PendingRescheduleView | undefined {
+  const proposal = getPendingReschedule(applicationId);
+  if (!proposal) return undefined;
+  const newTimeslot = db.prepare("SELECT * FROM timeslots WHERE id = ?").get(proposal.new_timeslot_id) as
+    | import("./db.ts").Timeslot
+    | undefined;
+  if (!newTimeslot) return undefined;
+  return { proposal, newTimeslot, proposedByCreator: proposal.proposed_by_device_id === moveout.creator_device_id };
+}
+
 export function listApplicationsForDevice(deviceId: string): Application[] {
   return db
     .prepare("SELECT * FROM applications WHERE claimer_device_id = ? ORDER BY created_at DESC")
@@ -42,17 +72,24 @@ export interface ApplicationWithContext extends Application {
   item_name: string;
   moveout_id: string;
   moveout_title: string;
+  moveout_timezone: string;
+  timeslot_starts_at: string | null;
 }
 
 // For the home page: "your requests" needs to link back to the moveout each
-// application belongs to, without the caller having to join it by hand.
+// application belongs to, without the caller having to join it by hand. Also
+// carries the confirmed pickup time so "My MoveOut" is a clear entry point
+// to it, not just a bare status label the claimant has to click through to
+// understand.
 export function listApplicationsWithContext(deviceId: string): ApplicationWithContext[] {
   return db
     .prepare(
-      `SELECT a.*, i.name AS item_name, m.id AS moveout_id, m.title AS moveout_title
+      `SELECT a.*, i.name AS item_name, m.id AS moveout_id, m.title AS moveout_title,
+              m.timezone AS moveout_timezone, t.starts_at AS timeslot_starts_at
        FROM applications a
        JOIN items i ON i.id = a.item_id
        JOIN moveouts m ON m.id = i.moveout_id
+       JOIN timeslots t ON t.id = a.timeslot_id
        WHERE a.claimer_device_id = ?
        ORDER BY a.created_at DESC`,
     )

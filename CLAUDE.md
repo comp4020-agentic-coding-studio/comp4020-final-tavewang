@@ -247,6 +247,90 @@ currently listening."
   sign the generic reconcile logic needs to learn a new case, not that
   Browse needs its own separate client-side path.
 
+## The confirmed pickup arrangement (final project)
+
+- `src/views/pickup-card.ts#pickupArrangementCard` is the **one** place the
+  confirmed timeslot, pickup location, travel status, and any pending
+  reschedule render — used by both the claimant's own request card
+  (`moveout-public.ts`) and the creator's upcoming-handoff card
+  (`moveout-manage.ts`). Don't duplicate this markup elsewhere; a new surface
+  that needs to show the arrangement calls this function.
+- The exact pickup location rule from above still applies here unchanged:
+  this card only ever renders for the confirmed claimant or the creator,
+  never anyone else, because it's reached only from routes that already
+  enforce that.
+
+## Departure (travel) status
+
+- `applications.departure_status` (`not_departed` / `departed` / `arrived`)
+  is a separate lifecycle from `applications.status` and `items.status` —
+  don't fold it into either. It only has meaning while the application is
+  `confirmed`; `POST /applications/:id/departure` is guarded by `WHERE
+  status = 'confirmed'`, same discipline as every other transition here.
+- Claimant-only, and free movement between all three values — never a
+  one-way ratchet. A claimant correcting a misclick (accidentally tapped
+  "Arrived") is a normal case, not an error.
+- "Arrived" is not "handed over." The creator's existing `complete` action
+  is still the only thing that ends the booking.
+- Rendered as three plain buttons, not a `<select>` — `src/public/live.js`'s
+  `isProtected()` treats any `<select>` moved off its first option as an
+  unfinished draft, which would permanently stop this card's live sync the
+  moment a claimant picked a non-default value. Don't change this control
+  back to a `<select>` without re-solving that.
+- Cancelling or completing blocks any further departure-status change — no
+  special-case check for this; it falls out of the same `WHERE status =
+  'confirmed'` guard.
+
+## Mutual reschedule
+
+- `reschedule_proposals` records a proposal to move a **confirmed**
+  application to a different timeslot already on the same move-out page —
+  never a second, parallel timeslot system. A page's existing "add a pickup
+  time" form is the only way a new candidate time comes into being; the
+  reschedule routes only ever pick among what's already there.
+- Either the creator or the claimant may propose; the **other** party must
+  accept — `src/routes/reschedule.ts`'s `accept`/`decline` routes reject the
+  proposer outright (403 for self-accept-attempt, since declining one's own
+  proposal makes no sense either — withdraw instead). A third party (anyone
+  who isn't the creator or this specific claimant) gets 404, same as every
+  other ownership check in this app.
+- At most one `pending` proposal per application at a time, enforced by
+  `reschedule_one_pending_per_application`, a partial unique index — the
+  same pattern as `applications_one_active_per_device`. Put new "only one
+  active X" rules in the schema, not application code, so two concurrent
+  requests can't both win.
+- The original confirmed time stays in effect, unchanged, until a proposal
+  is actually `accepted` — never on propose, never on an unresolved "pending"
+  state. The UI must keep saying so explicitly ("the original pickup time is
+  still in effect") so nobody reads a pending proposal as already settled.
+- Accepting re-validates, inside one transaction: the proposal is still
+  `pending`, the application is still `confirmed`, and the target timeslot's
+  start hasn't already passed — any one of those failing rolls back the
+  whole thing and reports a specific conflict, never a partial update. A
+  proposal whose own target time has since passed is marked `invalidated`
+  on the failed accept attempt (not left sitting as `pending` forever) so it
+  can't jam the one-pending-per-application slot for a legitimate new
+  proposal.
+- Accepting moves `applications.timeslot_id` and resets
+  `departure_status` to `'not_departed'` in the same transaction — a new
+  time means "on the way" from before no longer means anything.
+- Cancelling or completing an application invalidates any `pending`
+  proposal on it outright (`invalidatePendingReschedule` in
+  `src/routes/applications.ts`) — a reschedule has nothing left to apply to
+  once the booking it's attached to is gone. Never leave a `pending` row
+  dangling off a cancelled/completed application for a stale page to try to
+  accept later.
+- A new candidate timeslot must belong to the **same** move-out page, must
+  not be the application's current timeslot, must not have already started,
+  and must **end** by the page's deadline — `endsAt`, not just `startsAt`;
+  the existing add-timeslot route only checks `startsAt` against the
+  deadline, so a timeslot can exist whose end overruns it, and the
+  reschedule route is what has to catch that for its own purposes.
+- The item stays `reserved` throughout a pending reschedule — never
+  reopened, never auto-promoted to a waitlisted applicant. A reschedule is a
+  negotiation between the two parties already matched; it never touches the
+  waitlist.
+
 ## Business-action logging (crit 10)
 
 `src/log.ts#logEvent` is the one place that writes the server's business log
@@ -305,6 +389,12 @@ link-shared tool. That authorisation is specific, though — it covers
 browsing, search, category filtering, sort, and the Public/Unlisted choice
 that gates them. It is **not** licence to add anything beyond that on the
 same "it's a marketplace now" logic.
+
+The final-project round is similarly scoped to exactly three things: the
+full pickup arrangement card, claimant-set travel status, and mutual
+reschedule (see the sections above). Email/SMS notification was discussed
+for this round and explicitly deferred, not forgotten — still out of scope,
+below, same as it was before this round.
 
 Still out of scope, on purpose: payments, bidding, delivery, in-app chat,
 comments, likes/follows, ratings, AI recommendations, campus identity login,

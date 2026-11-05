@@ -1,8 +1,23 @@
 import { Hono } from "hono";
-import { db, withTransaction, type Item, type Moveout, type Timeslot } from "../db.ts";
+import { db, withTransaction, type DepartureStatus, type Item, type Moveout, type Timeslot } from "../db.ts";
 import { getApplication, getItem, getMoveout, isCreator } from "../ownership.ts";
 import { notifyDevice, notifyMoveout, notifyPublicPool } from "../live.ts";
 import { logEvent } from "../log.ts";
+
+const DEPARTURE_STATUSES: readonly DepartureStatus[] = ["not_departed", "departed", "arrived"];
+function isDepartureStatus(value: string): value is DepartureStatus {
+  return (DEPARTURE_STATUSES as readonly string[]).includes(value);
+}
+
+// Cancelling or completing a booking makes any still-pending reschedule
+// proposal on it meaningless — there's no longer a confirmed timeslot left
+// to move. Invalidate it rather than leave it sitting there as something an
+// unrelated page refresh could still try to accept.
+function invalidatePendingReschedule(applicationId: string): void {
+  db.prepare(
+    "UPDATE reschedule_proposals SET status = 'invalidated', resolved_at = datetime('now') WHERE application_id = ? AND status = 'pending'",
+  ).run(applicationId);
+}
 
 export const applicationRoutes = new Hono();
 
@@ -126,6 +141,7 @@ applicationRoutes.post("/applications/:id/cancel", async (c) => {
     if (result.changes > 0 && app.status === "confirmed") {
       db.prepare("UPDATE items SET status = 'open' WHERE id = ? AND status = 'reserved'").run(ctx.item.id);
     }
+    if (result.changes > 0) invalidatePendingReschedule(applicationId);
     return result.changes;
   });
 
@@ -170,6 +186,7 @@ applicationRoutes.post("/applications/:id/complete", (c) => {
       .run(applicationId);
     if (result.changes > 0) {
       db.prepare("UPDATE items SET status = 'handed_over' WHERE id = ? AND status = 'reserved'").run(ctx.item.id);
+      invalidatePendingReschedule(applicationId);
     }
     return result.changes;
   });
@@ -182,6 +199,41 @@ applicationRoutes.post("/applications/:id/complete", (c) => {
   notifyMoveout(ctx.moveout.id);
   notifyDevice(app.claimer_device_id);
   return c.redirect(`/m/${ctx.moveout.id}/manage`);
+});
+
+applicationRoutes.post("/applications/:id/departure", async (c) => {
+  const applicationId = c.req.param("id");
+  const ctx = context(applicationId);
+  if (!ctx) return c.notFound();
+  const deviceId = c.get("deviceId");
+  const app = getApplication(applicationId)!;
+  if (app.claimer_device_id !== deviceId) {
+    logEvent({ event: "application.departure", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 404, reasonCode: "not_claimant" });
+    return c.notFound();
+  }
+
+  const form = await c.req.formData();
+  const next = String(form.get("status") ?? "");
+  if (!isDepartureStatus(next)) {
+    logEvent({ event: "application.departure", actor: deviceId, outcome: "invalid", moveoutId: ctx.moveout.id, applicationId, status: 400, reasonCode: "bad_value" });
+    return c.text("That isn't a valid status.", 400);
+  }
+
+  // Only a confirmed booking has a pickup to travel toward — guarded the
+  // same way as every other transition (WHERE on current state, not
+  // read-then-check), and the claimant may move freely between the three
+  // values (correcting a misclick), never a one-way ratchet.
+  const result = db
+    .prepare("UPDATE applications SET departure_status = ? WHERE id = ? AND status = 'confirmed'")
+    .run(next, applicationId);
+  if (result.changes === 0) {
+    logEvent({ event: "application.departure", actor: deviceId, outcome: "conflict", moveoutId: ctx.moveout.id, applicationId, status: 409, reasonCode: "not_confirmed" });
+    return c.text("This booking is no longer confirmed — its travel status can't be changed.", 409);
+  }
+  logEvent({ event: "application.departure", actor: deviceId, outcome: "success", moveoutId: ctx.moveout.id, itemId: ctx.item.id, applicationId, reasonCode: next });
+  notifyMoveout(ctx.moveout.id);
+  notifyDevice(deviceId);
+  return c.redirect(`/m/${ctx.moveout.id}`);
 });
 
 applicationRoutes.post("/applications/:id/timeslot", async (c) => {

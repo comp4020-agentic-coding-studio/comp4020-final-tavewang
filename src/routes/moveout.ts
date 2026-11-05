@@ -1,7 +1,7 @@
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { db, isItemCategory, type Application, type Item, type Timeslot } from "../db.ts";
-import { getMoveout, isCreator, listItems, listTimeslots } from "../ownership.ts";
+import { getMoveout, isCreator, listItems, listTimeslots, pendingRescheduleView } from "../ownership.ts";
 import { newId } from "../ids.ts";
 import { zonedDateTimeToUtc } from "../tz.ts";
 import { saveUploadedPhoto, isUploadRejection } from "../uploads.ts";
@@ -40,9 +40,18 @@ moveoutRoutes.get("/m/:id", (c) => {
   // because the item was withdrawn") should still show up for them even
   // after the item itself is gone from the public list.
   const itemById = new Map(allItems.map((i) => [i.id, i]));
+  const slotById = new Map(listTimeslots(moveout.id).map((s) => [s.id, s]));
   const myApplications = myApps
-    .map((app) => ({ app, item: itemById.get(app.item_id) }))
-    .filter((x): x is { app: Application; item: Item } => Boolean(x.item));
+    .map((app) => ({
+      app,
+      item: itemById.get(app.item_id),
+      confirmedTimeslot: app.status === "confirmed" ? slotById.get(app.timeslot_id) : undefined,
+      pending: app.status === "confirmed" ? pendingRescheduleView(app.id, moveout) : undefined,
+    }))
+    .filter(
+      (x): x is { app: Application; item: Item; confirmedTimeslot: Timeslot | undefined; pending: ReturnType<typeof pendingRescheduleView> } =>
+        Boolean(x.item),
+    );
   const requestedItemIds = new Set(
     myApps.filter((a) => a.status === "pending" || a.status === "confirmed").map((a) => a.item_id),
   );
@@ -82,6 +91,7 @@ moveoutRoutes.get("/m/:id/manage", (c) => {
     )
     .all(moveout.id) as unknown as Application[];
   const itemById = new Map(items.map((i) => [i.id, i]));
+  const validSlotsForReschedule = timeslots.filter((s) => s.starts_at > now && s.ends_at <= moveout.deadline_at);
   const upcoming: UpcomingEntry[] = confirmed
     .map((app) => {
       const item = itemById.get(app.item_id);
@@ -95,7 +105,14 @@ moveoutRoutes.get("/m/:id/manage", (c) => {
         const slot = slotById.get(a.timeslot_id) as Timeslot;
         return { app: a, timeslot: slot, timeslotHasPassed: slot.starts_at <= now };
       });
-      return { app, item, timeslot, waitlist };
+      return {
+        app,
+        item,
+        timeslot,
+        waitlist,
+        validSlotsForReschedule,
+        pendingReschedule: pendingRescheduleView(app.id, moveout),
+      };
     })
     .filter((x): x is UpcomingEntry => x !== null)
     .sort((a, b) => a.timeslot.starts_at.localeCompare(b.timeslot.starts_at));

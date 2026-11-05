@@ -62,6 +62,12 @@ export interface Item {
 
 export type ApplicationStatus = "pending" | "confirmed" | "cancelled" | "completed";
 
+// The claimant's own travel state toward a confirmed pickup — independent of
+// applications.status (CLAUDE.md: don't collapse separate lifecycles into one
+// field). "Arrived" is not "handed over": the actual handover is still the
+// creator's existing complete action.
+export type DepartureStatus = "not_departed" | "departed" | "arrived";
+
 export interface Application {
   id: string;
   item_id: string;
@@ -70,11 +76,30 @@ export interface Application {
   claimer_nickname: string;
   note: string | null;
   status: ApplicationStatus;
+  departure_status: DepartureStatus;
   confirmed_at: string | null;
   cancelled_at: string | null;
   cancel_reason: string | null;
   completed_at: string | null;
   created_at: string;
+}
+
+// A proposal to move a CONFIRMED booking to a different timeslot already on
+// the same move-out page — never a second, parallel timeslot system. At most
+// one 'pending' proposal may exist per application at a time (enforced by the
+// partial unique index below, the same pattern as
+// applications_one_active_per_device).
+export type RescheduleStatus = "pending" | "accepted" | "declined" | "withdrawn" | "invalidated";
+
+export interface RescheduleProposal {
+  id: string;
+  application_id: string;
+  proposed_by_device_id: string;
+  new_timeslot_id: string;
+  reason: string | null;
+  status: RescheduleStatus;
+  created_at: string;
+  resolved_at: string | null;
 }
 
 const dataDir = process.env.DATA_DIR ?? "./data";
@@ -209,6 +234,43 @@ if (!hasColumn("items", "category")) {
 db.exec(`
   CREATE INDEX IF NOT EXISTS moveouts_visibility_idx ON moveouts (visibility, deadline_at);
   CREATE INDEX IF NOT EXISTS items_category_idx ON items (category, status);
+`);
+
+// Final-project pickup upgrade: departure status + mutual reschedule. Both
+// additive and re-runnable, same pattern as the Crit 11 migrations above —
+// never a DROP or rebuild, safe against a volume that already has Crit 1-11
+// data on it.
+if (!hasColumn("applications", "departure_status")) {
+  // Every pre-existing application (and every new one on an application that
+  // isn't yet confirmed) defaults to 'not_departed' — nobody's status is
+  // invented by this migration, it's just the correct starting point for a
+  // claimant who hasn't set anything yet.
+  db.exec(
+    `ALTER TABLE applications ADD COLUMN departure_status TEXT NOT NULL DEFAULT 'not_departed'
+     CHECK (departure_status IN ('not_departed', 'departed', 'arrived'))`,
+  );
+}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS reschedule_proposals (
+    id TEXT PRIMARY KEY,
+    application_id TEXT NOT NULL REFERENCES applications(id),
+    proposed_by_device_id TEXT NOT NULL,
+    new_timeslot_id TEXT NOT NULL REFERENCES timeslots(id),
+    reason TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'declined', 'withdrawn', 'invalidated')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS reschedule_application_idx ON reschedule_proposals (application_id, status);
+
+  -- At most one pending proposal per application at a time — mirrors
+  -- applications_one_active_per_device's pattern of putting the invariant in
+  -- the schema, not just application code.
+  CREATE UNIQUE INDEX IF NOT EXISTS reschedule_one_pending_per_application
+    ON reschedule_proposals (application_id)
+    WHERE status = 'pending';
 `);
 
 // Wraps a set of statements in a transaction. Node's single-threaded event
