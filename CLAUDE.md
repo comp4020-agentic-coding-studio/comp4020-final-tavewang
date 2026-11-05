@@ -27,7 +27,7 @@ not a quiet exception here.
   from two different devices is two different people — identity is always
   `(entity, device_id)`, never nickname.
 
-## Public browse pool (crit 11)
+## Public browse pool (final iteration)
 
 - `moveouts.visibility` (`public` / `unlisted`) is a separate concern from
   the creator/claimant ownership model above — it answers "can a stranger
@@ -383,7 +383,7 @@ Rules a route handler must follow when calling it:
 
 ## Current scope — don't quietly expand it
 
-Crit 11 is an explicitly authorised product-direction change (README's "what
+The public-browse iteration is an explicitly authorised product-direction change (README's "what
 good means" section): MoveOut is now a public discovery pool, not only a
 link-shared tool. That authorisation is specific, though — it covers
 browsing, search, category filtering, sort, and the Public/Unlisted choice

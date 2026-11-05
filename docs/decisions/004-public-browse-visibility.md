@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Crit 11 (product direction change, authorised for this round).
+Accepted — final-project public-browse iteration.
 
 ## The problem
 
@@ -30,8 +30,8 @@ Two sub-problems follow directly:
    complete.
 2. **A separate "discoverable" marketplace entity, distinct from the
    move-out page.** Would let one page expose different items to the pool
-   vs. its own link. Rejected as more product than this crit's brief asked
-   for, and a second source of truth for what an item's state is — CLAUDE.md
+   vs. its own link. Rejected because it adds unnecessary scope and a
+   second source of truth for what an item's state is — CLAUDE.md
    already treats one item having one authoritative status row as a hard
    rule; a second visibility surface per item would duplicate that.
 3. **A single `visibility` column on `moveouts`, explicit, server-checked,
