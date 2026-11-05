@@ -452,3 +452,62 @@ it("the new feature never exposes the exact pickup location before confirmation,
   const carolPage = await (await carol.get(`/m/${moveoutId}`)).text();
   expect(carolPage).not.toContain("Secret Pickup Spot 99");
 });
+
+// Regression for a real UI bug found by browser-level verification (not
+// visible to any of the HTTP-only tests above): src/views/pickup-card.ts
+// used to decide whether to show the "Propose a different pickup time"
+// form by checking `validSlotsForReschedule.length > 0` BEFORE excluding the
+// application's own current timeslot from the options list. A move-out page
+// with exactly one timeslot ever created — the one the booking is already
+// confirmed against — has a non-empty `validSlotsForReschedule` (it contains
+// that one timeslot) but zero slots actually offerable as a NEW time, so the
+// old code rendered a `<details>` with a `<select required>` and no
+// `<option>`s in it: a dead-end control a real person could open but never
+// submit. See scripts/browser-verify-pickup-card.mjs for the two-browser
+// confirmation that the fixed version shows the plain-language explanation
+// instead, on both the claimant's and the creator's page.
+it("shows no reschedule form (and no empty dropdown) when the only timeslot on the page is the one already confirmed", async () => {
+  const owner = makeClient(baseUrl);
+  const moveoutRes = await owner.post("/moveouts", {
+    title: "Single-timeslot-only reschedule guard",
+    area: "Test Hall",
+    pickupLocation: "Side door",
+    deadline: futureLocalDateTime(72),
+    timezone: "Australia/Sydney",
+    nickname: "Owner",
+    visibility: "unlisted",
+  });
+  const manageUrl = locationOf(moveoutRes);
+  const moveoutId = manageUrl.split("/")[2];
+  // Exactly ONE timeslot ever exists on this page.
+  await owner.post(`/m/${moveoutId}/timeslots`, { startsAt: futureLocalDateTime(2), endsAt: futureLocalDateTime(3) });
+  const itemForm = new FormData();
+  itemForm.set("name", "Only-slot item");
+  itemForm.set("category", "Other");
+  await owner.post(`/m/${moveoutId}/items`, itemForm);
+
+  const claimant = makeClient(baseUrl);
+  const publicPage = await (await claimant.get(`/m/${moveoutId}`)).text();
+  const itemId = publicPage.match(/data-item-id="([A-Za-z0-9_-]+)"/)![1];
+  const slotId = publicPage.match(/<option value="([A-Za-z0-9_-]+)">/)![1];
+  await claimant.post(`/m/${moveoutId}/apply`, { itemId, timeslotId: slotId, nickname: "Claimant" });
+  const managePage = await (await owner.get(manageUrl)).text();
+  const appId = applicationIdFor(managePage, "Claimant");
+  await owner.post(`/applications/${appId}/confirm`);
+
+  const claimantView = await (await claimant.get(`/m/${moveoutId}`)).text();
+  expect(claimantView).not.toContain("Propose a different pickup time");
+  expect(claimantView).not.toMatch(/reschedule-slot-[A-Za-z0-9_-]+" name="newTimeslotId" required>\s*<\/select>/);
+  expect(claimantView).toContain("No other pickup time is available to propose yet");
+
+  const creatorView = await (await owner.get(manageUrl)).text();
+  expect(creatorView).not.toContain("Propose a different pickup time");
+  expect(creatorView).toContain("No other pickup time is available to offer yet");
+
+  // Adding a second timeslot now gives both sides something real to propose.
+  await owner.post(`/m/${moveoutId}/timeslots`, { startsAt: futureLocalDateTime(5), endsAt: futureLocalDateTime(6) });
+  const claimantViewAfter = await (await claimant.get(`/m/${moveoutId}`)).text();
+  expect(claimantViewAfter).toContain("Propose a different pickup time");
+  const selectBlock = claimantViewAfter.match(/name="newTimeslotId" required>([\s\S]*?)<\/select>/)?.[1] ?? "";
+  expect(Array.from(selectBlock.matchAll(/<option value="[A-Za-z0-9_-]+"/g)).length).toBeGreaterThan(0);
+});

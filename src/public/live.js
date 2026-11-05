@@ -211,28 +211,64 @@
     reconcileSelects(oldEl, newEl);
   }
 
-  // The pickup arrangement card (src/views/pickup-card.ts) is mostly
-  // read-only facts — confirmed time, location, the claimant's travel
-  // status, any pending reschedule — refreshed as one block since its shape
-  // changes qualitatively (a reschedule proposal appearing/disappearing).
-  // But it also contains the "Propose a different pickup time" <details>,
-  // with its own reason text input and timeslot <select> — a genuine draft
-  // a person can be mid-typing, exactly like any other open sub-form
-  // elsewhere on this page. Replacing the whole card out from under that
-  // would silently clear it, so this skips the swap (same as reconcileList
-  // skipping a protected entity entirely) whenever isProtected finds a draft
-  // inside this specific card — not just inside oldEl as a whole, since
-  // oldEl here is the much larger application card, which patchSafeBits
-  // still wants to badge-update even while this smaller part is guarded.
+  // The pickup arrangement card (src/views/pickup-card.ts) has two parts
+  // that change independently:
+  //  - `[data-pickup-facts]`: confirmed time, location, travel status and
+  //    its buttons — always read-only/one-click, never a draft.
+  //  - `[data-reschedule-area]`: either a pending proposal (with
+  //    accept/decline/withdraw buttons — also never a draft) or the
+  //    "propose a different time" form, which DOES hold a genuine draft
+  //    (the reason text, the chosen new time).
+  //
+  // Bug fixed here: the first version of this function treated the whole
+  // `.pickup-card` as one unit and skipped the ENTIRE update — including
+  // `data-pickup-facts` and any incoming reschedule proposal — the instant
+  // isProtected() found a draft anywhere inside it. Reproduced with two
+  // browser contexts: claimant opens "Propose a different pickup time" and
+  // starts typing a reason; the creator proposes a reschedule from their own
+  // side a moment later; the claimant's page never shows it, because their
+  // own still-empty propose-form draft was blocking the whole card's sync,
+  // not just the one sub-form that was actually a draft. Fixed by syncing
+  // each part on its own terms: facts always refresh (no draft can live
+  // there), and the reschedule area only skips its own swap when ITS OWN
+  // open propose-form actually holds a draft — never because some other
+  // part of the card changed.
   function syncPickupCard(oldEl, newEl) {
     const oldCard = oldEl.querySelector(".pickup-card");
     const newCard = newEl.querySelector ? newEl.querySelector(".pickup-card") : null;
     if (!oldCard || !newCard) return;
-    if (oldCard.outerHTML === newCard.outerHTML) return;
-    if (isProtected(oldCard)) return;
-    const fresh = document.importNode(newCard, true);
-    enhanceForms(fresh);
-    oldCard.replaceWith(fresh);
+
+    const oldFacts = oldCard.querySelector("[data-pickup-facts]");
+    const newFacts = newCard.querySelector("[data-pickup-facts]");
+    if (oldFacts && newFacts && oldFacts.innerHTML !== newFacts.innerHTML) {
+      const fresh = document.importNode(newFacts, true);
+      enhanceForms(fresh);
+      oldFacts.replaceWith(fresh);
+    }
+
+    const oldArea = oldCard.querySelector("[data-reschedule-area]");
+    const newArea = newCard.querySelector("[data-reschedule-area]");
+    if (!oldArea || !newArea) return;
+    if (oldArea.innerHTML === newArea.innerHTML) return;
+    if (isProtected(oldArea)) {
+      // A real reschedule arrived (or the pending one resolved) while this
+      // viewer has their own open propose-form draft — same "kept but
+      // marked stale" treatment as any other protected entity that's gone
+      // out of date (see markGone), rather than either silently clearing
+      // their draft or silently hiding the other party's update forever.
+      if (!oldArea.querySelector("[data-live-note]")) {
+        const note = document.createElement("p");
+        note.className = "error-inline";
+        note.setAttribute("data-live-note", "");
+        note.setAttribute("role", "alert");
+        note.textContent = "The pickup arrangement changed while you were editing — your draft is kept; finish or close it to see the update.";
+        oldArea.prepend(note);
+      }
+      return;
+    }
+    const freshArea = document.importNode(newArea, true);
+    enhanceForms(freshArea);
+    oldArea.replaceWith(freshArea);
   }
 
   // Bug fix (crit-9 review): previously an application card's status badge
@@ -266,6 +302,27 @@
     // still be cancelled.
     if (newStatus === "cancelled" || newStatus === "completed") {
       oldEl.querySelectorAll('form[action*="/cancel"] button[type="submit"]').forEach((b) => {
+        b.disabled = true;
+      });
+      // Bug fix: departure-status and reschedule-propose/accept/decline/
+      // withdraw are confirmed-only actions (CLAUDE.md), but this disabling
+      // pass predates both and only ever knew about /cancel and /timeslot.
+      // Reproduced with two browser contexts: a claimant with an open
+      // "propose a different pickup time" draft never saw the creator's
+      // cancel land (syncPickupCard correctly keeps the draft and the
+      // arrangement's own facts/reschedule-area stay untouched while
+      // protected — see syncPickupCard above) — so the card's departure
+      // buttons and the propose-form's submit button stayed enabled and
+      // would still act on a booking that no longer exists. Disabling them
+      // here runs immediately on the status transition itself, independent
+      // of whether syncPickupCard's own area-level sync could apply yet.
+      oldEl.querySelectorAll('form[action*="/departure"] button[type="submit"]').forEach((b) => {
+        b.disabled = true;
+      });
+      oldEl.querySelectorAll('form[action*="/reschedule"] button[type="submit"]').forEach((b) => {
+        b.disabled = true;
+      });
+      oldEl.querySelectorAll('form[action*="/accept"] button[type="submit"], form[action*="/decline"] button[type="submit"], form[action*="/withdraw"] button[type="submit"]').forEach((b) => {
         b.disabled = true;
       });
     }

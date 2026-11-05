@@ -259,6 +259,26 @@ currently listening."
   this card only ever renders for the confirmed claimant or the creator,
   never anyone else, because it's reached only from routes that already
   enforce that.
+- The card's markup is split into two wrappers on purpose —
+  `[data-pickup-facts]` (confirmed time, location, travel status: always
+  read-only, never a draft) and `[data-reschedule-area]` (either the pending
+  proposal's accept/decline/withdraw controls, the propose-a-new-time form,
+  or a "nothing to propose" message) — because `src/public/live.js`'s
+  `syncPickupCard` reconciles them independently. **Bug, fixed**: the first
+  version checked `isProtected()` on the whole card and skipped the entire
+  sync whenever a draft existed ANYWHERE inside it, so a claimant with an
+  open "propose a different time" draft never found out about the other
+  party's own reschedule proposal arriving, or even that their own confirmed
+  time/pickup location had changed — not because any of that was itself a
+  draft, but because something else in the same card was. If you add a new
+  field to this card, decide which wrapper it belongs in; don't add a third
+  wrapper without also teaching `syncPickupCard` about it, or it'll silently
+  inherit whichever neighbour's protection status it happens to sit next to.
+- When `[data-reschedule-area]` genuinely can't sync because its own open
+  propose-form holds a draft, it leaves a `[data-live-note]` explaining that
+  the arrangement changed, the same "kept but visibly stale" treatment
+  `markGone` gives any other protected entity that's fallen behind — never
+  silently drop the incoming update, and never silently clear the draft.
 
 ## Departure (travel) status
 
@@ -280,6 +300,17 @@ currently listening."
 - Cancelling or completing blocks any further departure-status change — no
   special-case check for this; it falls out of the same `WHERE status =
   'confirmed'` guard.
+- When a cancel/complete transition lands while a viewer's propose-reschedule
+  draft is protecting `[data-reschedule-area]` from the structural resync
+  above, `syncApplicationStatus` is what disables the now-stale departure
+  and reschedule (propose/accept/decline/withdraw) buttons on the spot — it
+  can't wait for `syncPickupCard`'s own area-level sync, which is correctly
+  skipped while that draft is open. **Bug, fixed**: this disabling pass
+  predates departure status and reschedule entirely and only knew about
+  `/cancel` and `/timeslot` forms, so a claimant with an open reschedule
+  draft whose booking got cancelled kept fully-enabled buttons that would
+  409 if clicked. If a future action needs the same "disable once terminal"
+  treatment, add its form selector here, not just to the read-only text.
 
 ## Mutual reschedule
 
@@ -330,6 +361,16 @@ currently listening."
   reopened, never auto-promoted to a waitlisted applicant. A reschedule is a
   negotiation between the two parties already matched; it never touches the
   waitlist.
+- `pickupArrangementCard` decides whether to show the propose-a-new-time
+  form by computing the actually-offerable slots (every valid slot **minus**
+  the application's own current one) first, then checking THAT list's
+  length — never the other way around. **Bug, fixed**: the first version
+  checked `validSlotsForReschedule.length > 0` before excluding the current
+  timeslot, so a page with exactly one timeslot (the one already confirmed)
+  rendered a `<details>` with a `<select required>` and zero `<option>`s —
+  open-able but never submittable. When there's nothing to propose, show the
+  plain-language explanation (`"No other pickup time is available..."`),
+  worded for the viewer's own role, instead of an empty control.
 
 ## Business-action logging (crit 10)
 
