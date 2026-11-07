@@ -1,162 +1,82 @@
-# Your harness
+# MoveOut development rules
 
 Rules for working on MoveOut, derived from the design decisions in
-`README.md`'s "what good means" section and `PROCESS.md`'s stack ADR. If a
+`README.md`'s "What good means here" section and `PROCESS.md`'s decisions. If a
 change would break one of these, it needs README's argument updated first,
 not a quiet exception here.
 
 ## Identity, ownership, and the share link
 
-- A visitor's identity is a single long-lived `device` cookie
-  (`src/session.ts`), set on first visit. Never trust a client-supplied id
-  field for who someone is — always resolve identity from that cookie.
-- A move-out page's creator is `moveouts.creator_device_id`, set once at
-  creation. Every creator-only action (add item, add timeslot, withdraw,
-  confirm, complete, creator-initiated cancel, change visibility) checks the
-  requester's device against *that specific page's* value — never a
-  different page's, never a value the client sent.
-- There is **no separate management token**, on purpose: the brief requires
-  the share link to never double as management auth, so the simplest way to
-  guarantee that is to not have a second secret at all. `/m/:id` is the only
-  URL for a page; whether a visitor sees the public apply view or the
-  creator's dashboard is decided purely by whether their device matches
-  `creator_device_id`. Don't add a management token, a magic "admin" query
-  parameter, or anything else that would let *knowing a URL* substitute for
-  being recognised as the creator.
-- A nickname is display text only, never an identity key. The same nickname
-  from two different devices is two different people — identity is always
-  `(entity, device_id)`, never nickname.
+- Resolve the current account from the server-side session row through
+  `src/session.ts#deviceMiddleware`. The `device` cookie identifies a
+  browser and recognises its unbound legacy records; it is not an
+  alternative credential for an account-bound record.
+- `src/ownership.ts#matchesOwner` defines ownership for creators, claimants
+  and proposers through `isCreator`, `isClaimant` and `isProposer`:
+  a non-null account id requires that exact signed-in account; a null
+  account id uses the original device id. Never widen this to device OR
+  account, and never trust a submitted owner id or nickname.
+- Apply the same ownership rule in read queries and write guards.
+  `ownerMatchSql` supports queries such as the public page's own-request
+  list. An account's My MoveOut lists its associated records across
+  devices. Retain access to an unbound conflict through the current
+  browser's item-page link so the signed-in user can resolve it.
+- A nickname is display text. Two devices signed into one account are the
+  same account; two accounts sharing a device remain different owners.
+- `/m/:id` is a share link, never management authorization. Do not introduce
+  an admin query parameter or management token that bypasses ownership.
+  Public/Unlisted controls discovery, not permission to manage a page.
+- Only the authorised creator and confirmed claimant may see the exact
+  pickup location. Public cards and search must not expose it.
 
-## Accounts are required to publish or apply; device cookie is secondary
+## Login, sessions and legacy association
 
-- An account (`src/auth.ts`, `src/routes/auth.ts`) is email + password.
-  Creating a move-out page (`POST /moveouts`) and sending a request
-  (`POST /m/:id/apply`) both require being signed in — enforced
-  server-side, not just by hiding the buttons in a logged-out view. An
-  anonymous visitor hitting either route is redirected to `/login` with a
-  `next` back to a safe, same-site page (`src/session.ts#safeNextPath` —
-  never an external URL), never served a silent 403 with no explanation.
-  Browsing, searching, filtering, and viewing any page reachable by its own
-  link remain fully anonymous — the gate is specifically on writes that
-  create or claim data.
-- `moveouts.creator_account_id` and `applications.claimer_account_id` are
-  **nullable, additive** columns — NULL means "this predates the account
-  requirement, or is otherwise not yet claimed," never a gap to backfill or
-  guess. Both are set at creation/apply time (always, now that signing in is
-  required to reach those routes) or retroactively by
-  `src/auth.ts#claimAnonymousDataForAccount` on register/login, for rows
-  that predate this requirement and are still device-only.
-- **The ownership rule is account-replaces-device, not account-widens-
-  device.** `src/ownership.ts#matchesOwner` (used by `isCreator`,
-  `isClaimant`, `isProposer`) is the one place this is decided: once an
-  entity's `*_account_id` is non-null, **only** a live session signed into
-  that exact account counts — the device id that originally created it is
-  no longer a valid credential for it, even from the literal original
-  browser. Until an entity is claimed (`*_account_id IS NULL`), identity
-  stays device-only, exactly as the app worked before accounts existed. A
-  route that adds a new creator-only or claimant-only action must call
-  these shared functions, not write its own `=== deviceId` or
-  `deviceId || accountId` check.
-- **Recognising a device is not the same as authorizing a write, and every
-  write route must check both, in that order.** A second real vulnerability,
-  found and fixed this round: `isCreator`/`isClaimant` correctly recognise
-  an UNBOUND (still-unclaimed) page or application by device id alone —
-  that's the "identity stays device-only until claimed" rule directly
-  above, and it's needed to let old data be found and claimed at all. But
-  several write routes (add item/photo, add timeslot, change visibility,
-  withdraw, apply, confirm/cancel/complete, departure, change timeslot,
-  propose/accept/decline/withdraw a reschedule) treated that recognition
-  alone as sufficient authorization, with no separate check that the
-  request was actually signed in — so a visitor who still held an old
-  device cookie could keep publishing/modifying an unclaimed page's data
-  anonymously forever, never once needing to register. `src/session.ts
-  #requireSignedIn(c, fallback)` is the one gate every write route must call
-  FIRST, before any ownership check and before touching the database or
-  saving an uploaded file — it redirects to `/login?next=...` (never a bare
-  403) when there's no live session, same pattern as the existing
-  publish/apply gates. An ownership check alone is never sufficient
-  authorization for a write in this app; it answers "whose data is this,"
-  not "is this request allowed to act at all."
-- **This was a real vulnerability, found and fixed this round.** The
-  previous rule was an OR (device match OR account match, device checked
-  first) — so signing out (which only deletes the session row) never
-  revoked the separate, independent `device` cookie, and the original
-  creator, or anyone who'd captured that cookie, could keep managing data
-  they'd already signed into an account, indefinitely. See
-  `spec/permission-regression.test.ts` for the regression coverage (all ten
-  scenarios failed under the old OR logic, confirmed before the fix) and
-  `scripts/browser-verify-accounts.mjs` for the real-browser acceptance run.
-  If a future change ever needs device id to keep mattering after an entity
-  is claimed, that is a deliberate widening of the attack surface and needs
-  this section rewritten first, not a quiet exception.
-- **This rule has to reach read paths too, not just write guards.** Any
-  query that lists "my own" pages or applications must apply the identical
-  rule, not a separate device-only or OR-based comparison —
-  `src/ownership.ts#ownerMatchSql` exists precisely so a raw SQL query (like
-  `src/routes/moveout.ts`'s `myApps`) can mirror `matchesOwner`'s logic
-  exactly instead of drifting from it. A route or view that reads with a
-  different rule than its own write-side guard will disagree about who "the
-  claimant" or "the creator" is — the exact bug class a previous round's
-  fix (now superseded by the account-replaces-device rule above) also had
-  to close for the OR-based version of this logic.
-- `claimAnonymousDataForAccount` only ever claims a row whose
-  `*_account_id` is currently NULL or already equal to the account being
-  signed into — never a row another account has already claimed. Logging
-  into account B on a device that previously claimed data for account A
-  must not reassign A's data to B. The whole claim pass runs inside one
-  transaction (`src/db.ts#withTransaction`) so a crash between the
-  moveouts/applications/reschedule_proposals updates can't leave one table
-  claimed and the other not, and is safe to run repeatedly (logging into
-  the same account twice is a no-op, not an error).
-- **Identity verification (`verifyLogin`) and the result of the claim pass
-  are two separate things, and login must succeed on the former regardless
-  of the latter.** A real bug, found and fixed this round: claiming an
-  application can collide with `applications_one_active_per_identity`
-  (above) when the signing-in ACCOUNT already has its own active
-  application for an item this device ALSO has its own, still-unclaimed
-  application for. Before the fix, `claimAnonymousDataForAccount` ran every
-  row's claim inside one shared transaction with no per-row isolation, so
-  one row's unique-constraint violation threw out of the whole pass —
-  aborting the entire login/register request with a bare 500, with correct
-  credentials and no session created at all. Each application (and
-  reschedule proposal) is now claimed inside its own SAVEPOINT
-  (`claimRowsOneAtATime`, `src/auth.ts`): a conflicting row's claim rolls
-  back to its pre-claim state — left exactly as it was, still fully
-  reachable and manageable from the same anonymous device — without
-  aborting any other row's claim or the session being created around the
-  whole pass. A conflicted row is never silently dropped, auto-cancelled,
-  or force-claimed; `accountClaimedView` (`src/views/auth.ts`) names it
-  directly with a working link, so the person has a real way to resolve it
-  (cancel one of the two duplicates) and sign in again, rather than a dead
-  end. Any route or future claim-like pass that writes several independent
-  rows where one might hit a constraint the others won't must use this same
-  per-row-isolation shape — never one shared transaction where an
-  unrelated row's conflict can abort an otherwise-successful, security-
-  sensitive action like signing in.
-- `src/auth.ts#hasUnclaimedAnonymousData` may tell a not-yet-signed-in
-  visitor that *this device* has old, not-yet-claimed data (purely to set
-  expectations before they register/log in) — it must never itself grant
-  access to anything, bound or unbound; `isCreator`/`isClaimant` are the only
-  code that decides access.
-- A session (`account_sessions`) is a server-side row, not a signed token —
-  the `session` cookie carries only this row's unguessable id. **Sign-out
-  deletes the row.** This is what makes logout an actual revocation rather
-  than asking the browser nicely to forget a cookie: the exact same cookie
-  value, replayed after logout, must resolve to "not signed in," indistinguishable
-  from a session id that never existed. Never implement logout by only
-  clearing the cookie client-side. `src/session.ts#deviceMiddleware` resolves
-  the session against the live `account_sessions` row on every single
-  request (no caching), so revocation is immediate on the very next request
-  — including one already in flight from a stale open tab or SSE reconnect.
-- Passwords are hashed with `node:crypto`'s `scrypt` (`src/auth.ts#hashPassword`),
-  salted per-account, compared with `timingSafeEqual` — never stored
-  plaintext or reversibly encoded, never compared with `===`.
-- Login's rejection message is identical whether the email doesn't exist or
-  the password is wrong (`src/auth.ts#verifyLogin` returns `undefined` for
-  both) — never confirm which emails have an account.
-- All HTML routes serve `Cache-Control: private, no-store` (`src/server.ts`)
-  — a shared or public computer must never serve a stale authenticated page
-  back to the next person who sits down at it.
+- Email/password accounts are required for every business write: creating
+  pages, publishing items or photos, changing timeslots or visibility,
+  applying, withdrawing, confirming, cancelling, completing, reporting
+  departure, and all reschedule actions. Call `requireSignedIn` before
+  ownership checks, database mutations or saving uploads. Recognising an
+  unbound legacy record's device alone does not permit a write.
+- Browse, search and public page viewing remain available without login.
+  A login redirect uses `safeNextPath` and a destination within this app; never
+  accept an external return URL or automatically replay a pending write.
+- The `session` cookie holds an unguessable id for an `account_sessions`
+  row. Resolve it on each request. Logout deletes that session row and
+  clears the cookie; replaying it must fail. Other independently created
+  sessions for the same account remain valid. An already-open SSE stream
+  only signals changes; its page fetch must recheck current permissions.
+- Passwords use salted scrypt hashes and `timingSafeEqual`, never plaintext
+  or reversible encoding. Keep login rejection text the same for an unknown
+  email and an incorrect password. Do not log passwords or session tokens.
+- Account-aware HTML routes use `Cache-Control: private, no-store`.
+  Cache policy does not replace the live permission-loss handling below.
+- `hasUnclaimedAnonymousData` may indicate that this browser has older
+  data. It grants no permission by itself. Registration/login attempts
+  association through `claimAnonymousDataForAccount`, using the current
+  server-resolved device and account, never arbitrary submitted identities.
+- Association may touch only this device's unbound rows or rows already
+  associated with the same account. Never reassign another account's data.
+  Keep ids, history and relationships, including the device's reschedule
+  proposals. Repeating association must preserve the same ownership;
+  current counts can include rows already linked to this account.
+- The association pass uses one outer transaction. Application and proposal
+  updates use per-row savepoints: an expected uniqueness conflict leaves
+  that row unchanged while other valid associations can commit. This
+  deliberate partial result differs from an unexpected database failure,
+  which must roll back the outer transaction and remain visible as an error.
+- A duplicate-request association conflict must not block otherwise valid
+  login. Report linked records and unresolved requests separately, name the
+  conflicting item, and provide its real page link. Never silently delete,
+  cancel or force-link a conflicted request. The user can choose which
+  duplicate to cancel and sign in again to retry association.
+- Resolving an unbound conflict still requires login plus ownership of the
+  original device. Successfully associated records require their account
+  thereafter, including after logout or switching to another account.
+- Keep regression coverage for logout with the original device cookie,
+  account switching, anonymous legacy writes, cross-device access, wrong
+  passwords, association conflicts, repeat association and existing bookings.
+  See `spec/accounts.test.ts`, `spec/permission-regression.test.ts`,
+  `spec/claim-conflict.test.ts` and the corresponding browser scripts.
 
 ## Public browse pool (final iteration)
 
@@ -165,7 +85,7 @@ not a quiet exception here.
   *find* this page," not "can they manage it." A page's own link always
   works at either setting; only Browse's pool and search are gated by it.
   See [ADR 004](docs/decisions/004-public-browse-visibility.md).
-- Every pre-Crit-11 move-out page migrated to `unlisted` (`src/db.ts`), never
+- Every page predating public discovery migrated to `unlisted` (`src/db.ts`), never
   `public` — a page created before this flag existed must never become more
   exposed than its creator agreed to, migration or not. Never change that
   default without re-reading ADR 004 first.
@@ -206,69 +126,45 @@ not a quiet exception here.
   an already-open Browse tab goes stale, which is what crit 9's whole
   real-time apparatus (see below) exists to prevent.
 
-## One active request per PARTY, not per device
+## One active request per account or unbound device
 
-- `applications_one_active_per_identity` (`src/db.ts`, a partial unique
-  index on `(item_id, COALESCE(claimer_account_id, claimer_device_id))`) is
-  the invariant: at most one active (`pending`/`confirmed`) application per
-  item per PARTY — where "party" is the same account-replaces-device rule
-  as everywhere else (an account once bound, a device until then). A third
-  real vulnerability, found and fixed this round: the previous index
-  (`applications_one_active_per_device`, scoped by device id alone) let the
-  SAME account, signed into two different devices, hold two independently-
-  valid active applications on one item, since each device had its own
-  distinct id the index never connected. Never scope a new "one active X
-  per Y" rule by device id alone once accounts exist — use `COALESCE(account,
-  device)` the same way, or it will silently reopen this gap for whatever
-  new entity it protects.
-- The dedup migration this required (`dedupeDuplicateAccountApplications`
-  in `src/db.ts`, guarded by `schema_migrations` like every other one-time
-  backfill here) is itself a model for any future "the old constraint
-  permitted something the new one won't" migration: find the pre-existing
-  violations, NEVER delete a row, keep exactly one per group (the confirmed
-  one if any exist, since an item can only ever have one; otherwise the
-  oldest pending one — first-request-wins, not a random pick), and cancel
-  every other one with a specific, auditable `cancel_reason` a person
-  reading the history can understand. See
-  `spec/duplicate-application-migration.test.ts` for the regression
-  coverage against a seeded pre-fix database shape.
-- **Never recreate a superseded constraint unconditionally at every
-  startup.** A real startup-crashing bug, found and fixed this round: the
-  very first `db.exec(...)` block in `src/db.ts` (plain `CREATE TABLE IF
-  NOT EXISTS` statements) used to also unconditionally `CREATE UNIQUE INDEX
-  IF NOT EXISTS applications_one_active_per_device` — the OLD, device-only
-  rule — on EVERY startup, including ones where the one-time migration
-  further down had already replaced it with
-  `applications_one_active_per_identity`. On a database already holding
-  data the NEW rule correctly allows but the OLD rule doesn't (e.g. two
-  different accounts, from the same device, each with their own valid
-  active application for one item — never a duplicate under the current
-  rule), that unconditional `CREATE UNIQUE INDEX` found its own constraint
-  already violated and crashed the whole server before startup could ever
-  reach the code that would have dropped it. The fix: a constraint meant to
-  be superseded by a later one-time migration is created ONLY inside that
-  migration (guarded by `schema_migrations`, same as every other one-time
-  change here), never in the unconditional table-creation block that runs
-  on every single boot. If a future migration needs to replace another
-  constraint, give it the same shape — never add the old version back to
-  the always-runs block "just so a brand-new database still gets it," since
-  the one-time migration already covers that case too (a fresh database has
-  no migration row yet, so it runs there on first boot regardless). See
-  `spec/restart-after-account-scoped-applications.test.ts`, which drives
-  real HTTP requests to produce this exact data shape, stops the real
-  server process, and restarts it against the same `DATA_DIR` — this is the
-  only kind of test that actually catches a startup-order bug; a fixture
-  seeded directly into a database the server never had to boot against
-  twice would miss it.
+- `applications_one_active_per_identity` is the database invariant: at most
+  one pending/confirmed application per item and
+  `COALESCE(claimer_account_id, claimer_device_id)`. A bound account cannot
+  submit a second active request from another device. Different accounts
+  on one device may each apply. Cancelled/completed history does not prevent
+  a new application when the item's state permits it.
+- Enforce uniqueness in the database, not only with an earlier SELECT.
+  Tests must reject a same-account duplicate and permit different-account
+  requests on one device. A cancelled request never becomes active again;
+  reapplying creates a new record.
+- The existing `dedupeDuplicateAccountApplications` migration resolves
+  pre-index account duplicates once: retain a confirmed request if present,
+  otherwise the oldest pending request, and cancel other active duplicates
+  with a recorded reason. It preserves rows and history. This specific
+  migration is not permission to silently cancel future association
+  conflicts; those remain unchanged for the user to resolve as above.
+- Never recreate `applications_one_active_per_device` during startup.
+  Its unconditional creation was removed in `c7fe3ce`; startup drops any
+  surviving old index and ensures the current identity index exists.
+  Fresh, legacy and already-migrated databases must all reach the current
+  schema without imposing the superseded device-only constraint first.
+- Preserve tests that generate valid different-account requests on one
+  device through HTTP, stop the server, restart with the same DATA_DIR,
+  repeat the restart, and check records and permissions. Also test old
+  duplicate fixtures and repeat migrations. See
+  `spec/restart-after-account-scoped-applications.test.ts` and
+  `spec/duplicate-application-migration.test.ts`.
 
 ## Two status columns, not one
 
 `items.status` (`open` / `reserved` / `handed_over` / `withdrawn`) and
 `applications.status` (`pending` / `confirmed` / `cancelled` / `completed`)
 are separate columns on separate tables, by design — don't collapse them into
-one field. An item can have several applications over its life; only ever one
-of them active at a time; the item's own status outlives any single
-application's row.
+one field. An item can have several pending applications from different
+people, but at most one confirmed recipient. Each account or unbound device
+has at most one active application per item. The item's status outlives any
+single application's row.
 
 Transitions, and who may cause them:
 
@@ -292,7 +188,7 @@ Transitions, and who may cause them:
 `cancelled` and `completed` are terminal. Nothing ever moves an application
 out of either state.
 
-## Confirming is the one place two requests can race
+## Guard state transitions and confirmation races
 
 Guard every state transition with a single `UPDATE ... WHERE id = ? AND
 status = '<required current state>'` — never read-then-check-then-write. This
@@ -349,8 +245,8 @@ names the timezone (`formatInZone`) rather than leaving it implicit.
 
 ## Persistence
 
-All durable state — move-out pages, timeslots, items, applications, and
-uploaded photos — lives under `DATA_DIR` (the SQLite file plus
+All durable state — accounts, sessions, move-out pages, timeslots, items,
+applications, reschedule proposals and uploaded photos — lives under `DATA_DIR` (the SQLite file plus
 `DATA_DIR/uploads/`). Nothing load-bearing goes in a module-level variable,
 browser storage, or a container path outside `DATA_DIR`.
 
@@ -369,25 +265,16 @@ currently listening."
   exact same route and ownership checks as a manual reload. **Never** put
   application data on that stream directly; the moment it needs to, it needs
   its own permission check, which defeats the reason it doesn't have one now.
-- **Three buses, not one**: `moveoutBus` (per move-out page), `deviceBus`
-  (per device — unchanged since before accounts), and `accountBus`
-  (per account, `src/live.ts#notifyAccount`/`#onAccountChange`, added this
-  round). A real vulnerability, found and fixed this round: "My MoveOut"'s
-  own subscription (`GET /events`, `src/routes/home.ts`) and every write
-  that called `notifyDevice()` were keyed purely by device id even once
-  accounts existed — so device A creating a page or sending a request never
-  woke device B's already-open "My MoveOut" tab, even when B was signed
-  into the exact same account, because the device bus only ever hears about
-  writes made BY that specific device. Any write that changes what an
-  ACCOUNT's own "My MoveOut" list shows (a new page, a new/confirmed/
-  cancelled/completed application, an accepted/declined/withdrawn
-  reschedule) must call `notifyAccount(accountId)` alongside the existing
-  `notifyDevice()` call, resolved from `c.get("account")?.id` — the live,
-  server-verified session — never from anything a client sends. `GET
-  /m/:id/events` subscribes to the requester's own device AND account bus
-  too (not just the moveout bus), for the same reason: a manage page or
-  claimant's public page left open in another tab needs to hear about a
-  logout or account switch, not just about changes to that one page.
+- `src/live.ts` has four signal buses: `moveoutBus`, `deviceBus`,
+  `accountBus` and the public `poolBus`. Writes notify the relevant page,
+  affected devices and affected accounts. Use account ids from verified
+  sessions or stored records whose permissions have been checked; a mover
+  confirming a request must notify the claimant's account, not only the
+  mover's. Never accept a client-selected subscription identity.
+- `/events` subscribes to the viewer's device and, when signed in, account.
+  `/m/:id/events` also subscribes to the page. Unsubscribe all listeners
+  when the stream closes. Preserve tests that another device on the same
+  account sees its My MoveOut list update without a reload.
 - **A permission failure and a network failure need different client-side
   treatment, and conflating them was a real vulnerability.** Before this
   round, `src/public/live.js#resync`'s `catch` block handled EVERY failed
@@ -407,42 +294,40 @@ currently listening."
   client-side permission check — the server remains the sole authority
   throughout, exactly as the next two bullets require — it only stops a
   tab that's already been told "no" from pretending otherwise.
-- `POST /logout` (`src/routes/auth.ts`) calls `notifyDevice`/`notifyAccount`
-  for the signing-out identity right away, rather than waiting for some
-  unrelated future write to happen to touch something an open tab is
-  watching — this is what makes a stale tab notice a sibling tab's logout
-  within about a second (the resync path above) instead of only on its own
-  next `visibilitychange` poll, or possibly never if nothing else happens to
-  change on that page again. Logging out on one device must never notify or
-  revoke a DIFFERENT device's own independent session — this only ever
-  touches the signing-out request's own `deviceId`/`account.id`.
+- `POST /logout` deletes only the current session and signals the device
+  and account buses. Other devices may receive the signal and re-fetch,
+  but their independent sessions must remain valid. A notification is not
+  revocation. Verify the actual DOM of another open tab after logout,
+  rather than treating a rejected HTTP request as proof it was cleared.
 - A write that depends on current state (confirm, cancel, apply, change
   timeslot) is validated against the live database row by its guarded
   `UPDATE ... WHERE status = '<state>'`, same as always — the real-time path
   adds no second way to call these routes and no reason to trust what a
   client's on-screen state claims is true. `src/public/live.js` only ever
   re-fetches and re-POSTs through the existing routes.
-- `src/public/live.js` never replaces a DOM node the person is actively using
+- During authorised live updates, `src/public/live.js` preserves a DOM node the person is actively using
   — an open `<details>`, a changed input/select, a chosen file (the mover's
   add-item photo — the claimant's apply form has no file input), current
   keyboard focus, an in-progress IME composition (`isProtected`). It still
   patches the safe, read-only parts of a protected node in place (status badge, tone, an
   item's availability note, a now-visible pickup address, whether an open
   sub-form's controls still make sense) — see `patchSafeBits` and
-  `syncApplicationStatus` — so shared state never goes stale just because
-  someone's mid-form.
+  `syncApplicationStatus`. Structural changes held back by a draft must
+  show a visible stale-state notice. Permission loss takes priority over
+  draft preservation and must remove private content.
 - IME composition protects only the active input and its ancestors. Other
   entities and safe shared-state updates must continue during composition;
   never return early from page-wide resync because an input is composing.
   Do not move its ancestor nodes until composition ends, then reconcile the
   latest fetched state through `scheduleCatchUp`.
-- A node that isn't just changed but **gone entirely** from the server's
+- During an authorised update, a node that's **gone entirely** from the server's
   current page (withdrawn, or moved from "upcoming" to "completed") and is
   still protected is never silently left looking valid: `markGone` disables
   every control on it and adds an explicit notice, without touching the
   person's typed input. The actual removal happens once they stop editing it
   (`scheduleCatchUp`, fired on `focusout`/`<details>` closing) — never on a
-  separate, unrelated SSE push that may not arrive for a while.
+  separate, unrelated SSE push that may not arrive for a while. This does
+  not override the permission-loss rule above.
 - **Reconciliation never moves a DOM node that's already in the right
   place.** A card's position is only changed when it's genuinely out of
   order relative to the newly-fetched list — not on every sync regardless of
@@ -467,8 +352,8 @@ currently listening."
 - Connection status (`#connection-status`) reflects what the SSE connection
   and the last resync fetch actually did, never `navigator.onLine` — a
   machine can report "online" while this app's own connection is down.
-- Browse (`GET /`) follows the exact same pattern as any other page here: a
-  third SSE bus (`notifyPublicPool`/`onPublicPoolChange`, `src/live.ts`)
+- Browse (`GET /`) follows the exact same pattern as any other page here: the
+  public pool bus (`notifyPublicPool`/`onPublicPoolChange`, `src/live.ts`)
   signals "something changed," and the one subscriber (`src/public/live.js`,
   via `data-live="/browse/events"`) re-fetches `location.href` — meaning
   whatever `?q=`/`?category=`/`?sort=` the visitor currently has, not a
@@ -511,7 +396,8 @@ currently listening."
   propose-form holds a draft, it leaves a `[data-live-note]` explaining that
   the arrangement changed, the same "kept but visibly stale" treatment
   `markGone` gives any other protected entity that's fallen behind — never
-  silently drop the incoming update, and never silently clear the draft.
+  silently drop the incoming update or clear an authorised draft. Loss of
+  permission still requires removing private content.
 
 ## Departure (travel) status
 
@@ -560,7 +446,7 @@ currently listening."
   other ownership check in this app.
 - At most one `pending` proposal per application at a time, enforced by
   `reschedule_one_pending_per_application`, a partial unique index — the
-  same pattern as `applications_one_active_per_device`. Put new "only one
+  same pattern as `applications_one_active_per_identity`. Put new "only one
   active X" rules in the schema, not application code, so two concurrent
   requests can't both win.
 - The original confirmed time stays in effect, unchanged, until a proposal
@@ -571,8 +457,8 @@ currently listening."
   `pending`, the application is still `confirmed`, and the target timeslot's
   start hasn't already passed — any one of those failing rolls back the
   whole thing and reports a specific conflict, never a partial update. A
-  proposal whose own target time has since passed is marked `invalidated`
-  on the failed accept attempt (not left sitting as `pending` forever) so it
+  proposal whose own target time has since passed is then marked `invalidated`
+  outside the rolled-back transaction (not left sitting as `pending` forever) so it
   can't jam the one-pending-per-application slot for a legitimate new
   proposal.
 - Accepting moves `applications.timeslot_id` and resets
@@ -614,7 +500,9 @@ apply, confirm, cancel, complete, change timeslot, withdraw). See [ADR
 Rules a route handler must follow when calling it:
 
 - **Actor is always the server-resolved `deviceId`** (`c.get("deviceId")`),
-  never a client-supplied field. `logEvent` hashes it before writing — never
+  never a client-supplied field. This log identifies a browser actor; it is
+  not the account ownership rule and does not unify devices into one actor.
+  `logEvent` hashes it before writing — never
   call `console.log`/write the raw `deviceId` (or anything derived from the
   `device` cookie) anywhere else in a route.
 - **`outcome: "success"` only after the database write actually committed.**
@@ -623,7 +511,7 @@ Rules a route handler must follow when calling it:
   transaction, after both guards passed) — never before the write, never
   inside a `try` block that might still roll back.
 - **A rejected write is never `success`.** Use `denied` for an ownership/
-  permission check failing (wrong device), `invalid` for a validation or
+  permission check failing (wrong account or legacy device), `invalid` for a validation or
   state-precondition failure (deadline passed, nickname missing), `conflict`
   for losing a race or acting on an already-settled row (409s), and `error`
   only for a genuine unexpected exception — don't collapse all four into one
@@ -652,30 +540,22 @@ Rules a route handler must follow when calling it:
   pickup details below"), never colour alone.
 - Every interactive control is a real `<form>`/`<button>`/`<input>`/`<select>`
   with an associated `<label>` — keyboard-operable by default.
-- Errors are specific (what was wrong, not just "error") and never discard
-  what the person already typed.
+- Validation errors explain what was wrong and preserve ordinary form input.
+  Never echo passwords; lost permission takes priority over retaining a draft.
 
 ## Current scope — don't quietly expand it
 
-The public-browse iteration is an explicitly authorised product-direction change (README's "what
-good means" section): MoveOut is now a public discovery pool, not only a
-link-shared tool. That authorisation is specific, though — it covers
-browsing, search, category filtering, sort, and the Public/Unlisted choice
-that gates them. It is **not** licence to add anything beyond that on the
-same "it's a marketplace now" logic.
+The authorised product is a public discovery pool with search, category
+filtering, two sorts (newest and soonest deadline), and Public/Unlisted
+pages. Pickup coordination includes the confirmed arrangement card,
+claimant-controlled travel status and mutual rescheduling. Email/password
+accounts, cross-device access, legacy-data association, login gates and
+their permission/migration fixes are also in scope.
 
-The final-project round is similarly scoped to exactly three things: the
-full pickup arrangement card, claimant-set travel status, and mutual
-reschedule (see the sections above). Email/SMS notification was discussed
-for this round and explicitly deferred, not forgotten — still out of scope,
-below, same as it was before this round.
-
-Still out of scope, on purpose: payments, bidding, delivery, in-app chat,
-comments, likes/follows, ratings, AI recommendations, campus identity login,
-email/SMS notifications, automatic backup-promotion, calendar integration,
-partial-quantity requests, an online "who's here now" presence list, a
-pickup-capacity limit, user profiles beyond a nickname, and any ranking of
-results other than the two explicit sorts (newest, soonest deadline). Don't
-add any of these as a "quick win" without first updating `README.md`'s
-"good" argument — a feature not argued for there isn't one the spec or the
-marker is looking for.
+Payments, bidding, delivery, in-app chat, comments, likes/follows, ratings,
+AI recommendations, campus identity login, email/SMS notifications,
+automatic backup-promotion, calendar integration, partial-quantity requests,
+presence lists, pickup-capacity limits and social profiles remain outside
+scope. There is currently no password-reset flow. A proposed expansion must
+first explain its purpose in README's definition of good and identify the
+rules and checks it requires.
