@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { createAccount, verifyLogin, createSession, destroySession, claimAnonymousDataForAccount, hasUnclaimedAnonymousData } from "../auth.ts";
 import { setSessionCookie, clearSessionCookie, getSessionCookie, safeNextPath } from "../session.ts";
 import { registerView, loginView, accountClaimedView } from "../views/auth.ts";
+import { getApplicationsWithContext } from "../ownership.ts";
 import { logEvent } from "../log.ts";
 import { notifyAccount, notifyDevice } from "../live.ts";
 
@@ -44,19 +45,41 @@ authRoutes.post("/register", async (c) => {
   // The device that just registered may already have anonymous pages/
   // requests — link them to the brand-new account right away, so
   // registering never feels like it discarded what you'd already done in
-  // this browser.
+  // this browser. Registering a brand-new account can't itself collide with
+  // the new account's own prior applications (it has none yet), but the
+  // claim still goes through the same conflict-tolerant path as login for
+  // one reason: a registration can race a concurrent claim from a DIFFERENT
+  // device already signing into this exact browser's device id onto some
+  // other account in between — vanishingly rare, but handled the same way
+  // rather than assumed away.
   const claimed = claimAnonymousDataForAccount(deviceId, account.id);
 
   const sessionId = createSession(account.id);
   setSessionCookie(c, sessionId);
-  logEvent({ event: "account.register", actor: deviceId, outcome: "success", status: 200, reasonCode: `claimed_${claimed.moveouts}_${claimed.applications}` });
+  // Account creation and session creation are NOT conditional on the claim
+  // pass succeeding in full — a registration always succeeds once the
+  // account itself is created; `outcome` here is about account creation,
+  // not about how many of this device's old rows got linked, which is
+  // exactly what reasonCode records separately. See the fuller explanation
+  // on the /login handler below, where this distinction is load-bearing
+  // (a correct password must never fail because of an unrelated claim
+  // conflict).
+  logEvent({
+    event: "account.register",
+    actor: deviceId,
+    outcome: "success",
+    status: 200,
+    reasonCode: `claimed_${claimed.moveouts}_${claimed.applications}_conflicted_${claimed.conflictedApplications}`,
+  });
 
   // Lands on an intermediate confirmation page (what got linked), not a
   // silent redirect straight to `next` — the brief asks that the user
   // "actively complete" whatever action brought them here, not have it
   // replayed for them; this page's own link to `next` is that deliberate
-  // next click.
-  return c.html(accountClaimedView(account, claimed, next));
+  // next click. Any conflicted application is shown here directly, with
+  // enough context to find and resolve it — never just a bare count.
+  const conflictedApplications = getApplicationsWithContext(claimed.conflictedApplicationIds);
+  return c.html(accountClaimedView(account, claimed, next, conflictedApplications));
 });
 
 authRoutes.get("/login", (c) => {
@@ -90,13 +113,36 @@ authRoutes.post("/login", async (c) => {
   // Same claim-on-sign-in pass as register: this device may have made
   // pages/requests anonymously before this login, on this same browser —
   // link them now rather than leaving them orphaned on the device id alone.
+  //
+  // A real bug, fixed this round: identity verification (the `verifyLogin`
+  // check above — correct email + password) and the RESULT of this claim
+  // pass are two separate things, and the login must succeed on the former
+  // regardless of the latter. `claimAnonymousDataForAccount` used to throw
+  // straight out of a single transaction the moment ANY one application hit
+  // `applications_one_active_per_identity`'s unique constraint (this
+  // account already having its own active request for an item this device
+  // also had an unclaimed request for) — which meant a password that was
+  // completely correct still got a 500 and no session, because of data this
+  // device happened to be carrying that had nothing to do with whether the
+  // credentials were right. `claimAnonymousDataForAccount` now isolates
+  // each row's claim in its own SAVEPOINT (src/auth.ts) so one conflicting
+  // row never aborts the whole pass — the session below is always created
+  // once `verifyLogin` has already succeeded, independent of how the claim
+  // turned out.
   const claimed = claimAnonymousDataForAccount(deviceId, account.id);
 
   const sessionId = createSession(account.id);
   setSessionCookie(c, sessionId);
-  logEvent({ event: "account.login", actor: deviceId, outcome: "success", status: 200, reasonCode: `claimed_${claimed.moveouts}_${claimed.applications}` });
+  logEvent({
+    event: "account.login",
+    actor: deviceId,
+    outcome: "success",
+    status: 200,
+    reasonCode: `claimed_${claimed.moveouts}_${claimed.applications}_conflicted_${claimed.conflictedApplications}`,
+  });
 
-  return c.html(accountClaimedView(account, claimed, next));
+  const conflictedApplications = getApplicationsWithContext(claimed.conflictedApplicationIds);
+  return c.html(accountClaimedView(account, claimed, next, conflictedApplications));
 });
 
 authRoutes.post("/logout", (c) => {

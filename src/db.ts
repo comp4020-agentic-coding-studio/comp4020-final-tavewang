@@ -229,14 +229,23 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS items_moveout_idx ON items (moveout_id, status);
   CREATE INDEX IF NOT EXISTS applications_item_idx ON applications (item_id, status);
-
-  -- The uniqueness rule lives in the schema, not in application code: a
-  -- device can hold at most one active (pending or confirmed) application
-  -- per item, but may re-apply after cancelling.
-  CREATE UNIQUE INDEX IF NOT EXISTS applications_one_active_per_device
-    ON applications (item_id, claimer_device_id)
-    WHERE status IN ('pending', 'confirmed');
 `);
+// `applications_one_active_per_device` (one active application per item per
+// DEVICE) used to be created right here, unconditionally, on every single
+// startup — including ones where `applications_one_active_per_identity`
+// (the account-scoped successor, created further down) had already fully
+// replaced it. That was a real bug, found this round: this `CREATE TABLE
+// IF NOT EXISTS .. db.exec(...)` block runs before the one-time migration
+// below gets anywhere near dropping the old index, so on an already-
+// migrated database holding data the account-scoped rule correctly
+// allows — e.g. two different accounts each independently applying for the
+// same item, which never violates `applications_one_active_per_identity`
+// — this unconditional `CREATE UNIQUE INDEX` for the OLD, device-only rule
+// found that same data violating ITS narrower rule and failed outright,
+// taking the whole server down before it could reach the code that would
+// have dropped this index. The old index is created ONLY below, inside the
+// one-time migration, and only for a database that doesn't already have the
+// new one — never unconditionally at every startup.
 
 // Crit 11: the browse pool. Two additive, re-runnable migrations — never a
 // DROP or a rebuild — so this is safe to run against a volume that already

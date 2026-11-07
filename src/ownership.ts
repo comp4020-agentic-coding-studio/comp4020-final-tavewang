@@ -180,6 +180,34 @@ export function listApplicationsWithContext(deviceId: string): ApplicationWithCo
     .all(deviceId) as unknown as ApplicationWithContext[];
 }
 
+// This device's own still-unclaimed (claimer_account_id IS NULL) active
+// applications — used only to show a signing-in visitor exactly which of
+// their own requests didn't get linked because of a conflict with their
+// account's existing request for the same item
+// (src/auth.ts#claimAnonymousDataForAccount), with enough context (item
+// name, moveout id) to link straight to the page where they can resolve it.
+// Deliberately NOT scoped to "pending"/"confirmed" only — a device's
+// already-cancelled or completed history has no bearing on a fresh
+// conflict, but this helper is only ever called with the specific ids the
+// claim pass just reported as conflicted, so the caller already knows which
+// rows matter.
+export function getApplicationsWithContext(applicationIds: string[]): ApplicationWithContext[] {
+  if (applicationIds.length === 0) return [];
+  const placeholders = applicationIds.map(() => "?").join(",");
+  return db
+    .prepare(
+      `SELECT a.*, i.name AS item_name, m.id AS moveout_id, m.title AS moveout_title,
+              m.timezone AS moveout_timezone, t.starts_at AS timeslot_starts_at
+       FROM applications a
+       JOIN items i ON i.id = a.item_id
+       JOIN moveouts m ON m.id = i.moveout_id
+       JOIN timeslots t ON t.id = a.timeslot_id
+       WHERE a.id IN (${placeholders})
+       ORDER BY a.created_at DESC`,
+    )
+    .all(...applicationIds) as unknown as ApplicationWithContext[];
+}
+
 // Account-scoped equivalent of listApplicationsWithContext — every request
 // sent by ANY device this account has claimed data on, same reasoning as
 // listMoveoutsCreatedByAccount above.

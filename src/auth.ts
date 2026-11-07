@@ -148,17 +148,121 @@ export function hasUnclaimedAnonymousData(deviceId: string): boolean {
 // could otherwise influence), and only rows not already claimed by a
 // DIFFERENT account (so logging into account B on a device that previously
 // claimed data for account A can't silently reassign A's data to B).
-//
-// Wrapped in a transaction: the two UPDATEs below move different tables
-// (moveouts, applications) from device-owned to account-owned atomically —
-// a crash or error between them must not leave one table claimed and the
-// other not, which src/db.ts#withTransaction's rollback-on-throw guarantees.
-// Each individual UPDATE's own WHERE clause is still what makes it immune to
-// a race with a concurrent claim attempt (re-reading `creator_account_id`/
-// `claimer_account_id` at write time, not from an earlier read) — the
+export interface ClaimResult {
+  moveouts: number;
+  applications: number;
+  rescheduleProposals: number;
+  // A real bug, found this round: claiming an application can collide with
+  // `applications_one_active_per_identity` (src/db.ts) when the signing-in
+  // ACCOUNT already has its own active (pending/confirmed) application for
+  // the exact same item, submitted from a different device — e.g. account A
+  // already applied for Item X from device 1, and THIS device has its own,
+  // still-unclaimed, pre-existing application for that same Item X. Before
+  // this fix, that one row's UNIQUE-constraint violation threw out of the
+  // whole claim transaction uncaught, taking down the entire login/register
+  // request with a 500 — correct credentials, no login at all. Each
+  // application is now claimed inside its own SAVEPOINT, so one row's
+  // conflict only skips THAT row (left exactly as it was — still device-
+  // owned, still fully reachable and manageable from this same anonymous
+  // device, since it was never touched) without aborting any other row's
+  // claim or the session being created. This count is how many rows hit
+  // that specific conflict and were deliberately left unclaimed — never
+  // silently dropped, never auto-cancelled, and `hasUnclaimedAnonymousData`
+  // will keep reporting them until the conflict is resolved (e.g. by
+  // cancelling one of the two competing requests) and this device signs in
+  // again.
+  conflictedApplications: number;
+  // The specific row ids that hit that conflict — so the confirmation page
+  // (src/views/auth.ts#accountClaimedView) can link straight to each one
+  // rather than just reporting a bare count with nowhere to click.
+  conflictedApplicationIds: string[];
+}
+
+// Node's SqliteError carries the SQLite result code as `errcode` (2067 ==
+// SQLITE_CONSTRAINT_UNIQUE). Matching on that specific code — not "any
+// thrown error" — is what keeps a genuine, unexpected database fault (disk
+// full, corruption, a constraint nobody anticipated) from being silently
+// treated as a routine, recoverable claim conflict; an unexpected error
+// still propagates and fails the request loudly, same as everywhere else in
+// this app that distinguishes the two.
+function isUniqueConstraintError(err: unknown): boolean {
+  return err instanceof Error && "errcode" in err && (err as { errcode?: number }).errcode === 2067;
+}
+
+// Claims every row of `table` this device owns and hasn't already claimed
+// into a DIFFERENT account, one row at a time inside its own SAVEPOINT —
+// so a single row's unique-constraint conflict rolls back only that row,
+// never the whole claim pass or the session being created around it.
+// Returns how many rows were actually claimed and how many hit a conflict
+// and were left untouched.
+function claimRowsOneAtATime(
+  table: "applications" | "reschedule_proposals",
+  deviceColumn: string,
+  accountColumn: string,
+  deviceId: string,
+  accountId: string,
+): { claimed: number; conflicted: number; conflictedIds: string[] } {
+  const candidates = db
+    .prepare(
+      `SELECT id FROM ${table} WHERE ${deviceColumn} = ? AND (${accountColumn} IS NULL OR ${accountColumn} = ?)`,
+    )
+    .all(deviceId, accountId) as unknown as { id: string }[];
+  let claimed = 0;
+  const conflictedIds: string[] = [];
+  for (const { id } of candidates) {
+    db.exec("SAVEPOINT claim_row");
+    try {
+      const result = db
+        .prepare(
+          `UPDATE ${table} SET ${accountColumn} = ?
+           WHERE id = ? AND ${deviceColumn} = ? AND (${accountColumn} IS NULL OR ${accountColumn} = ?)`,
+        )
+        .run(accountId, id, deviceId, accountId);
+      db.exec("RELEASE claim_row");
+      if (Number(result.changes) > 0) claimed++;
+    } catch (err) {
+      db.exec("ROLLBACK TO claim_row");
+      db.exec("RELEASE claim_row");
+      if (!isUniqueConstraintError(err)) throw err;
+      conflictedIds.push(id);
+    }
+  }
+  return { claimed, conflicted: conflictedIds.length, conflictedIds };
+}
+
+// Wrapped in a transaction: every table's claim pass happens atomically — a
+// crash or genuinely unexpected error partway through must not leave one
+// table claimed and another not, which src/db.ts#withTransaction's
+// rollback-on-throw guarantees. Each individual UPDATE's own WHERE clause
+// is still what makes it immune to a race with a concurrent claim attempt
+// (re-reading `creator_account_id`/`claimer_account_id`/
+// `proposed_by_account_id` at write time, not from an earlier read) — the
 // transaction adds cross-table atomicity on top of that, it isn't what
-// provides the race safety by itself.
-export function claimAnonymousDataForAccount(deviceId: string, accountId: string): { moveouts: number; applications: number } {
+// provides the race safety by itself. Safe to call repeatedly: a row
+// already claimed by this exact account matches the same WHERE clause and
+// is simply re-written to the value it already has (`changes` still counts
+// it, which is fine — this function's callers only use the counts for a
+// user-facing summary, never as a correctness signal).
+//
+// `moveouts` has no equivalent unique-per-account constraint, so it's
+// claimed in one bulk UPDATE exactly as before. `applications` and
+// `reschedule_proposals` go through claimRowsOneAtATime, since an
+// application claim can collide with `applications_one_active_per_identity`
+// (see ClaimResult#conflictedApplications above) — reschedule proposals
+// have no equivalent conflict (claiming `proposed_by_account_id` doesn't
+// interact with `reschedule_one_pending_per_application`, which is keyed by
+// `application_id` alone, not by proposer identity), but the same
+// one-row-at-a-time shape is used for consistency and so a future
+// constraint added to that table doesn't silently regain this bug. Claiming
+// a device's own pending reschedule proposals here (not just its
+// applications) matters because `isProposer` (src/ownership.ts) stays
+// device-scoped for any proposal left with `proposed_by_account_id IS
+// NULL` indefinitely — leaving one unclaimed would mean a DIFFERENT device
+// that later happened to carry this exact (unguessable) device cookie could
+// still act as the original proposer forever, instead of the account
+// becoming the sole authority the same way it does for the application
+// itself.
+export function claimAnonymousDataForAccount(deviceId: string, accountId: string): ClaimResult {
   return withTransaction(() => {
     const moveoutsResult = db
       .prepare(
@@ -166,12 +270,16 @@ export function claimAnonymousDataForAccount(deviceId: string, accountId: string
          WHERE creator_device_id = ? AND (creator_account_id IS NULL OR creator_account_id = ?)`,
       )
       .run(accountId, deviceId, accountId);
-    const applicationsResult = db
-      .prepare(
-        `UPDATE applications SET claimer_account_id = ?
-         WHERE claimer_device_id = ? AND (claimer_account_id IS NULL OR claimer_account_id = ?)`,
-      )
-      .run(accountId, deviceId, accountId);
-    return { moveouts: Number(moveoutsResult.changes), applications: Number(applicationsResult.changes) };
+
+    const applications = claimRowsOneAtATime("applications", "claimer_device_id", "claimer_account_id", deviceId, accountId);
+    const proposals = claimRowsOneAtATime("reschedule_proposals", "proposed_by_device_id", "proposed_by_account_id", deviceId, accountId);
+
+    return {
+      moveouts: Number(moveoutsResult.changes),
+      applications: applications.claimed,
+      rescheduleProposals: proposals.claimed,
+      conflictedApplications: applications.conflicted,
+      conflictedApplicationIds: applications.conflictedIds,
+    };
   });
 }

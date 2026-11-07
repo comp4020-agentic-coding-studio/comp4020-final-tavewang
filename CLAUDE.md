@@ -105,9 +105,34 @@ not a quiet exception here.
   into account B on a device that previously claimed data for account A
   must not reassign A's data to B. The whole claim pass runs inside one
   transaction (`src/db.ts#withTransaction`) so a crash between the
-  moveouts/applications updates can't leave one table claimed and the other
-  not, and is safe to run repeatedly (logging into the same account twice
-  is a no-op, not an error).
+  moveouts/applications/reschedule_proposals updates can't leave one table
+  claimed and the other not, and is safe to run repeatedly (logging into
+  the same account twice is a no-op, not an error).
+- **Identity verification (`verifyLogin`) and the result of the claim pass
+  are two separate things, and login must succeed on the former regardless
+  of the latter.** A real bug, found and fixed this round: claiming an
+  application can collide with `applications_one_active_per_identity`
+  (above) when the signing-in ACCOUNT already has its own active
+  application for an item this device ALSO has its own, still-unclaimed
+  application for. Before the fix, `claimAnonymousDataForAccount` ran every
+  row's claim inside one shared transaction with no per-row isolation, so
+  one row's unique-constraint violation threw out of the whole pass —
+  aborting the entire login/register request with a bare 500, with correct
+  credentials and no session created at all. Each application (and
+  reschedule proposal) is now claimed inside its own SAVEPOINT
+  (`claimRowsOneAtATime`, `src/auth.ts`): a conflicting row's claim rolls
+  back to its pre-claim state — left exactly as it was, still fully
+  reachable and manageable from the same anonymous device — without
+  aborting any other row's claim or the session being created around the
+  whole pass. A conflicted row is never silently dropped, auto-cancelled,
+  or force-claimed; `accountClaimedView` (`src/views/auth.ts`) names it
+  directly with a working link, so the person has a real way to resolve it
+  (cancel one of the two duplicates) and sign in again, rather than a dead
+  end. Any route or future claim-like pass that writes several independent
+  rows where one might hit a constraint the others won't must use this same
+  per-row-isolation shape — never one shared transaction where an
+  unrelated row's conflict can abort an otherwise-successful, security-
+  sensitive action like signing in.
 - `src/auth.ts#hasUnclaimedAnonymousData` may tell a not-yet-signed-in
   visitor that *this device* has old, not-yet-claimed data (purely to set
   expectations before they register/log in) — it must never itself grant
@@ -207,6 +232,34 @@ not a quiet exception here.
   reading the history can understand. See
   `spec/duplicate-application-migration.test.ts` for the regression
   coverage against a seeded pre-fix database shape.
+- **Never recreate a superseded constraint unconditionally at every
+  startup.** A real startup-crashing bug, found and fixed this round: the
+  very first `db.exec(...)` block in `src/db.ts` (plain `CREATE TABLE IF
+  NOT EXISTS` statements) used to also unconditionally `CREATE UNIQUE INDEX
+  IF NOT EXISTS applications_one_active_per_device` — the OLD, device-only
+  rule — on EVERY startup, including ones where the one-time migration
+  further down had already replaced it with
+  `applications_one_active_per_identity`. On a database already holding
+  data the NEW rule correctly allows but the OLD rule doesn't (e.g. two
+  different accounts, from the same device, each with their own valid
+  active application for one item — never a duplicate under the current
+  rule), that unconditional `CREATE UNIQUE INDEX` found its own constraint
+  already violated and crashed the whole server before startup could ever
+  reach the code that would have dropped it. The fix: a constraint meant to
+  be superseded by a later one-time migration is created ONLY inside that
+  migration (guarded by `schema_migrations`, same as every other one-time
+  change here), never in the unconditional table-creation block that runs
+  on every single boot. If a future migration needs to replace another
+  constraint, give it the same shape — never add the old version back to
+  the always-runs block "just so a brand-new database still gets it," since
+  the one-time migration already covers that case too (a fresh database has
+  no migration row yet, so it runs there on first boot regardless). See
+  `spec/restart-after-account-scoped-applications.test.ts`, which drives
+  real HTTP requests to produce this exact data shape, stops the real
+  server process, and restarts it against the same `DATA_DIR` — this is the
+  only kind of test that actually catches a startup-order bug; a fixture
+  seeded directly into a database the server never had to boot against
+  twice would miss it.
 
 ## Two status columns, not one
 
