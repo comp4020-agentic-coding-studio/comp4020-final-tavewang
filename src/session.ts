@@ -74,6 +74,27 @@ export function getSessionCookie(c: Context): string | undefined {
   return getCookie(c, SESSION_COOKIE_NAME);
 }
 
+// Every real write route in this app (publish a page, add an item/photo/
+// timeslot, change visibility, withdraw, apply, confirm/cancel/complete,
+// set departure status, propose/accept/decline/withdraw a reschedule) must
+// require a live session BEFORE touching the database or the filesystem —
+// a bug fixed this round: isCreator/isClaimant correctly recognise an
+// unbound (pre-accounts) page or application by its device id alone, but
+// that's an IDENTITY check, not a LOGIN requirement, and several write
+// routes used only that identity check, so an anonymous visitor who still
+// held an old device cookie could keep publishing/modifying an unclaimed
+// page's data forever without ever signing in. This redirects (not a bare
+// 403) to `/login` with a safe `next` back to the page the write was
+// attempted from, matching the same pattern already used by
+// src/routes/home.ts and src/routes/moveout.ts's apply gate — now the ONE
+// place every write route gets that behaviour from, instead of each route
+// re-deciding whether to add it.
+export function requireSignedIn(c: Context, fallback: string): Response | undefined {
+  if (c.get("account")) return undefined;
+  const next = safeNextPath(fallback);
+  return c.redirect(`/login?next=${encodeURIComponent(next)}&reason=signin_required`);
+}
+
 // A safe "come back here after logging in" path: only ever a path on THIS
 // app (starting with exactly one `/`, never `//` which some browsers treat
 // as protocol-relative to an attacker's own host, and never an absolute

@@ -3,6 +3,7 @@ import { createAccount, verifyLogin, createSession, destroySession, claimAnonymo
 import { setSessionCookie, clearSessionCookie, getSessionCookie, safeNextPath } from "../session.ts";
 import { registerView, loginView, accountClaimedView } from "../views/auth.ts";
 import { logEvent } from "../log.ts";
+import { notifyAccount, notifyDevice } from "../live.ts";
 
 export const authRoutes = new Hono();
 
@@ -100,6 +101,7 @@ authRoutes.post("/login", async (c) => {
 
 authRoutes.post("/logout", (c) => {
   const sessionId = getSessionCookie(c);
+  const account = c.get("account");
   if (sessionId) {
     // Deleting the row is what makes this cookie value immediately useless
     // everywhere, not just in this browser — a stolen cookie can't be
@@ -108,6 +110,16 @@ authRoutes.post("/logout", (c) => {
     destroySession(sessionId);
   }
   clearSessionCookie(c);
-  logEvent({ event: "account.logout", actor: c.get("deviceId"), outcome: "success", status: 200 });
+  const deviceId = c.get("deviceId");
+  logEvent({ event: "account.logout", actor: deviceId, outcome: "success", status: 200 });
+  // Wake every other open tab on this device (and every other device signed
+  // into the same account) RIGHT NOW, rather than waiting for the next
+  // unrelated write to happen to touch something they're watching — this is
+  // what makes a manage page or a claimant's own public page left open
+  // elsewhere notice the logout within about a second instead of possibly
+  // never, since src/public/live.js's resync only runs on an incoming
+  // "sync" event (or the next visibilitychange/focus poll).
+  notifyDevice(deviceId);
+  if (account) notifyAccount(account.id);
   return c.redirect("/mine");
 });

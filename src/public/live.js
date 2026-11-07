@@ -92,6 +92,24 @@
   let syncFailures = 0;
   let syncRetryTimer = null;
 
+  // A bug fixed this round: a 401/403 response here (signed out in another
+  // tab, switched accounts, or the session was otherwise revoked between
+  // page loads) used to be caught by the SAME branch as a dropped network
+  // connection — status("Could not sync — retrying") and an exponential
+  // backoff retry loop that never stops, while the DOM still shows whatever
+  // private content this tab fetched before it lost access. A permission
+  // failure and a network failure need different treatment: the server has
+  // SPOKEN (it answered, and said "no"), so retrying the same request on a
+  // timer can never fix it, and silently leaving the old page on screen
+  // means a signed-out tab keeps showing confirmed pickup addresses, "My
+  // MoveOut" entries, and management controls for data this browser can no
+  // longer prove it's allowed to see. The fix: treat 401/403 as permission
+  // loss, not connectivity loss — stop polling and hard-navigate to this
+  // same URL, so the server's OWN rendered response (its real not-found/
+  // forbidden/login view, with no private content in it at all) replaces
+  // the stale DOM. The server remains the sole authority throughout; this
+  // doesn't invent a new client-side permission check, it just stops a
+  // genuinely-rejected tab from pretending nothing happened.
   async function resync() {
     const token = ++syncToken;
     if (syncRetryTimer) {
@@ -102,6 +120,16 @@
     try {
       const res = await fetch(location.href, { credentials: "same-origin", cache: "no-store" });
       if (token !== syncToken) return; // a newer sync superseded this one
+      if (res.status === 401 || res.status === 403) {
+        closeStream();
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        setStatus("Signed out — reloading", "error");
+        window.location.replace(location.href);
+        return;
+      }
       if (!res.ok) throw new Error("status " + res.status);
       text = await res.text();
     } catch {

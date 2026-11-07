@@ -76,7 +76,10 @@ it("1. after logout, the original device cookie no longer manages the page it cr
   // Management page, 404-shaped (same as any non-creator), not 200.
   expect((await fetch(new URL(manageUrl, baseUrl), { headers: { Cookie: cookie } })).status).toBe(403);
 
-  // A write (add timeslot) must also be rejected, not just the read.
+  // A write (add timeslot) must also be rejected, not just the read. The
+  // not-signed-in gate (src/session.ts#requireSignedIn) fires before the
+  // ownership check now, so this is a 302-to-login, not isCreator's 404 —
+  // either way, no write happens.
   const moveoutId = manageUrl.split("/")[2];
   const writeRes = await fetch(new URL(`/m/${moveoutId}/timeslots`, baseUrl), {
     method: "POST",
@@ -84,7 +87,8 @@ it("1. after logout, the original device cookie no longer manages the page it cr
     headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
     body: new URLSearchParams({ startsAt: futureLocalDateTime(2), endsAt: futureLocalDateTime(3) }).toString(),
   });
-  expect(writeRes.status).toBe(404);
+  expect(writeRes.status).toBe(302);
+  expect(writeRes.headers.get("location")).toContain("/login");
 });
 
 // (2) Replaying the revoked session cookie TOGETHER WITH the original device
@@ -318,7 +322,12 @@ it("9. after logout, an already-open private page's own re-fetch is rejected, no
 });
 
 // (10) Same account across devices still respects duplicate-apply/confirm
-// business rules — the account layer doesn't loosen them.
+// business rules — the account layer doesn't loosen them. Corrected this
+// round: `applications_one_active_per_identity` (src/db.ts) now scopes
+// uniqueness by account once one exists, not by device — so a SECOND device
+// signed into the same account applying for the item the first device
+// already requested must be rejected too, not treated as independent just
+// because it has its own device id.
 it("10. the same account on two devices still can't double-confirm or double-apply past the existing business rules", async () => {
   const owner = await makeClient(baseUrl);
   const moveout = await createMoveout(owner, { title: "Regress 10 page", deadline: futureLocalDateTime(72), nickname: "Owner" });
@@ -332,17 +341,10 @@ it("10. the same account on two devices still can't double-confirm or double-app
   const timeslotId = firstTimeslotId(publicPage, itemId);
   expect((await apply(claimantDevice1, moveout.moveoutId, { itemId, timeslotId, nickname: "Claimant" })).status).toBe(302);
 
-  // The existing uniqueness rule (applications_one_active_per_device,
-  // src/db.ts) is scoped per DEVICE, same as before this round — this round
-  // only changes who counts as "the owner" once data is account-bound, not
-  // this pre-existing per-device duplicate-request rule, which is out of
-  // scope here. A second device signed into the same account therefore
-  // still succeeds in applying from its own device id; what must still hold
-  // is that the SAME device can't double-apply.
   const claimantDevice2 = await makeClient(baseUrl);
   await claimantDevice2.post("/login", { email, password });
   const secondApplyRes = await apply(claimantDevice2, moveout.moveoutId, { itemId, timeslotId, nickname: "Claimant again" });
-  expect(secondApplyRes.status).toBe(302);
+  expect(secondApplyRes.status).toBe(409);
   const repeatApplyRes = await apply(claimantDevice1, moveout.moveoutId, { itemId, timeslotId, nickname: "Claimant" });
   expect(repeatApplyRes.status).toBe(409);
 

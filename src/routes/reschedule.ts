@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import { db, withTransaction, type Application, type Item, type Moveout, type Timeslot } from "../db.ts";
 import { getApplication, getItem, getMoveout, getPendingReschedule, getReschedule, isClaimant, isCreator, isProposer } from "../ownership.ts";
-import { notifyDevice, notifyMoveout } from "../live.ts";
+import { notifyAccount, notifyDevice, notifyMoveout } from "../live.ts";
 import { logEvent } from "../log.ts";
+import { requireSignedIn } from "../session.ts";
 
 export const rescheduleRoutes = new Hono();
 
@@ -28,6 +29,17 @@ function roleOf(moveout: Moveout, app: Application, deviceId: string, accountId:
   return null;
 }
 
+// A reschedule's outcome (accept, in particular) changes the confirmed
+// pickup time shown on BOTH parties' own "My MoveOut" list, not just the
+// moveout page itself — this notifies each party's account bus (when
+// bound), alongside the existing per-device notifyDevice calls, same
+// reasoning as every other write that affects what an account's home page
+// shows (src/live.ts#notifyAccount).
+function notifyPartyAccounts(app: Application, moveout: Moveout): void {
+  if (app.claimer_account_id) notifyAccount(app.claimer_account_id);
+  if (moveout.creator_account_id) notifyAccount(moveout.creator_account_id);
+}
+
 function validNewTimeslot(timeslot: Timeslot | undefined, moveout: Moveout, currentTimeslotId: string, now: string): string | null {
   if (!timeslot || timeslot.moveout_id !== moveout.id) return "That pickup time doesn't belong to this move-out page.";
   if (timeslot.id === currentTimeslotId) return "That's already the current pickup time.";
@@ -42,6 +54,11 @@ rescheduleRoutes.post("/applications/:id/reschedule", async (c) => {
   if (!ctx) return c.notFound();
   const deviceId = c.get("deviceId");
   const app = getApplication(applicationId)!;
+  const signinRedirect = requireSignedIn(c, `/m/${ctx.moveout.id}`);
+  if (signinRedirect) {
+    logEvent({ event: "reschedule.propose", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 401, reasonCode: "not_signed_in" });
+    return signinRedirect;
+  }
   const role = roleOf(ctx.moveout, app, deviceId, c.get("account")?.id);
   if (!role) {
     logEvent({ event: "reschedule.propose", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 404, reasonCode: "not_party" });
@@ -95,6 +112,7 @@ rescheduleRoutes.post("/applications/:id/reschedule", async (c) => {
   notifyMoveout(ctx.moveout.id);
   notifyDevice(app.claimer_device_id);
   if (role === "claimant") notifyDevice(ctx.moveout.creator_device_id);
+  notifyPartyAccounts(app, ctx.moveout);
   return role === "creator" ? c.redirect(`/m/${ctx.moveout.id}/manage`) : c.redirect(`/m/${ctx.moveout.id}`);
 });
 
@@ -106,6 +124,11 @@ rescheduleRoutes.post("/reschedule/:id/accept", (c) => {
   if (!ctx) return c.notFound();
   const deviceId = c.get("deviceId");
   const app = getApplication(proposal.application_id)!;
+  const signinRedirect = requireSignedIn(c, `/m/${ctx.moveout.id}`);
+  if (signinRedirect) {
+    logEvent({ event: "reschedule.accept", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId: app.id, status: 401, reasonCode: "not_signed_in" });
+    return signinRedirect;
+  }
   const role = roleOf(ctx.moveout, app, deviceId, c.get("account")?.id);
   if (!role) {
     logEvent({ event: "reschedule.accept", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId: app.id, status: 404, reasonCode: "not_party" });
@@ -175,6 +198,7 @@ rescheduleRoutes.post("/reschedule/:id/accept", (c) => {
   notifyMoveout(ctx.moveout.id);
   notifyDevice(app.claimer_device_id);
   notifyDevice(ctx.moveout.creator_device_id);
+  notifyPartyAccounts(app, ctx.moveout);
   return role === "creator" ? c.redirect(`/m/${ctx.moveout.id}/manage`) : c.redirect(`/m/${ctx.moveout.id}`);
 });
 
@@ -186,6 +210,11 @@ rescheduleRoutes.post("/reschedule/:id/decline", (c) => {
   if (!ctx) return c.notFound();
   const deviceId = c.get("deviceId");
   const app = getApplication(proposal.application_id)!;
+  const signinRedirect = requireSignedIn(c, `/m/${ctx.moveout.id}`);
+  if (signinRedirect) {
+    logEvent({ event: "reschedule.decline", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId: app.id, status: 401, reasonCode: "not_signed_in" });
+    return signinRedirect;
+  }
   const role = roleOf(ctx.moveout, app, deviceId, c.get("account")?.id);
   if (!role) {
     logEvent({ event: "reschedule.decline", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId: app.id, status: 404, reasonCode: "not_party" });
@@ -207,6 +236,7 @@ rescheduleRoutes.post("/reschedule/:id/decline", (c) => {
   notifyMoveout(ctx.moveout.id);
   notifyDevice(app.claimer_device_id);
   notifyDevice(ctx.moveout.creator_device_id);
+  notifyPartyAccounts(app, ctx.moveout);
   return role === "creator" ? c.redirect(`/m/${ctx.moveout.id}/manage`) : c.redirect(`/m/${ctx.moveout.id}`);
 });
 
@@ -218,6 +248,11 @@ rescheduleRoutes.post("/reschedule/:id/withdraw", (c) => {
   if (!ctx) return c.notFound();
   const deviceId = c.get("deviceId");
   const app = getApplication(proposal.application_id)!;
+  const signinRedirect = requireSignedIn(c, `/m/${ctx.moveout.id}`);
+  if (signinRedirect) {
+    logEvent({ event: "reschedule.withdraw", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId: app.id, status: 401, reasonCode: "not_signed_in" });
+    return signinRedirect;
+  }
   if (!isProposer(proposal, deviceId, c.get("account")?.id)) {
     logEvent({ event: "reschedule.withdraw", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId: app.id, status: 404, reasonCode: "not_proposer" });
     return c.notFound();
@@ -235,5 +270,6 @@ rescheduleRoutes.post("/reschedule/:id/withdraw", (c) => {
   notifyMoveout(ctx.moveout.id);
   notifyDevice(app.claimer_device_id);
   notifyDevice(ctx.moveout.creator_device_id);
+  notifyPartyAccounts(app, ctx.moveout);
   return role === "creator" ? c.redirect(`/m/${ctx.moveout.id}/manage`) : c.redirect(`/m/${ctx.moveout.id}`);
 });

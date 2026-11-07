@@ -70,6 +70,14 @@ function seedOldSchema() {
   db.prepare(
     "INSERT INTO applications (id, item_id, timeslot_id, claimer_device_id, claimer_nickname, status) VALUES (?,?,?,?,?,?)",
   ).run("legacy-app", "legacy-item", "legacy-timeslot", "legacy-claimer", "Legacy Claimer", "completed");
+
+  // A second legacy page, dedicated to this round's "no anonymous writes on
+  // unbound legacy data" checks below — kept separate from legacy-moveout
+  // above so those tests (which read its content) aren't disturbed by a
+  // write attempt here failing or succeeding.
+  db.prepare(
+    "INSERT INTO moveouts (id, title, area, pickup_location, deadline_at, creator_device_id, creator_nickname) VALUES (?,?,?,?,?,?,?)",
+  ).run("legacy-moveout-2", "Second Legacy Page", "Legacy Hall", "Legacy Door", "2030-01-01T00:00:00.000Z", "legacy-device-2", "Legacy Owner Two");
   db.close();
 }
 
@@ -241,4 +249,89 @@ it("the legacy move-out page's original device can register and claim it into a 
   };
   expect(moveout.creator_account_id).toBe(account.id);
   db.close();
+});
+
+// Regression: before this round's fix, isCreator correctly recognised the
+// original device cookie on an unbound (pre-accounts) page — that's an
+// IDENTITY check — but several write routes treated recognition alone as
+// authorization, with no separate "is this request actually signed in"
+// gate. An anonymous visitor replaying "legacy-moveout-2"'s own
+// creator_device_id cookie (exactly like a browser that's had this app
+// installed since before accounts existed, and never registered) could
+// still add items, timeslots, or change visibility on it forever. This
+// fixture is the real scenario the brief asks for: genuine pre-accounts
+// data read from the database, not a freshly-created-then-rejected
+// anonymous page, which would prove something narrower.
+it("1. an old, still-unbound legacy page's own device cookie can no longer publish items without signing in — nothing is written", async () => {
+  const beforeItems = (
+    new DatabaseSync(join(dataDir, "moveout.db")).prepare("SELECT COUNT(*) AS n FROM items WHERE moveout_id = ?").get("legacy-moveout-2") as { n: number }
+  ).n;
+  expect(beforeItems).toBe(0);
+
+  const addItemRes = await fetch(new URL("/m/legacy-moveout-2/items", baseUrl), {
+    method: "POST",
+    redirect: "manual",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: "device=legacy-device-2" },
+    body: new URLSearchParams({ name: "Should never be added", category: "Other" }).toString(),
+  });
+  expect(addItemRes.status).toBe(302);
+  expect(addItemRes.headers.get("location")).toContain("/login");
+
+  const addTimeslotRes = await fetch(new URL("/m/legacy-moveout-2/timeslots", baseUrl), {
+    method: "POST",
+    redirect: "manual",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: "device=legacy-device-2" },
+    body: new URLSearchParams({ startsAt: "2029-01-01T10:00", endsAt: "2029-01-01T11:00" }).toString(),
+  });
+  expect(addTimeslotRes.status).toBe(302);
+  expect(addTimeslotRes.headers.get("location")).toContain("/login");
+
+  const visibilityRes = await fetch(new URL("/m/legacy-moveout-2/visibility", baseUrl), {
+    method: "POST",
+    redirect: "manual",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: "device=legacy-device-2" },
+    body: new URLSearchParams({ visibility: "public" }).toString(),
+  });
+  expect(visibilityRes.status).toBe(302);
+  expect(visibilityRes.headers.get("location")).toContain("/login");
+
+  // Nothing was actually written to the database by any of the three
+  // rejected attempts above.
+  const db = new DatabaseSync(join(dataDir, "moveout.db"));
+  const afterItems = (db.prepare("SELECT COUNT(*) AS n FROM items WHERE moveout_id = ?").get("legacy-moveout-2") as { n: number }).n;
+  expect(afterItems).toBe(0);
+  const afterTimeslots = (db.prepare("SELECT COUNT(*) AS n FROM timeslots WHERE moveout_id = ?").get("legacy-moveout-2") as { n: number }).n;
+  expect(afterTimeslots).toBe(0);
+  const moveout = db.prepare("SELECT visibility FROM moveouts WHERE id = ?").get("legacy-moveout-2") as { visibility: string };
+  expect(moveout.visibility).toBe("unlisted");
+  db.close();
+});
+
+// (2) Once the SAME device registers (claiming this legacy page into an
+// account), it can continue to manage it normally — compatibility with old
+// data isn't lost by closing the anonymous-write hole above.
+it("2. after registering and claiming, the legacy page's original device can continue to manage it normally", async () => {
+  const registerRes = await fetch(new URL("/register", baseUrl), {
+    method: "POST",
+    redirect: "manual",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: "device=legacy-device-2" },
+    body: new URLSearchParams({ email: "legacy-owner-2@example.com", password: "legacypassword1" }).toString(),
+  });
+  expect(registerRes.status).toBe(200);
+  const cookie = registerRes.headers
+    .getSetCookie()
+    .map((c) => c.split(";")[0])
+    .join("; ");
+
+  const addItemRes = await fetch(new URL("/m/legacy-moveout-2/items", baseUrl), {
+    method: "POST",
+    redirect: "manual",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
+    body: new URLSearchParams({ name: "Added after claiming", category: "Other" }).toString(),
+  });
+  expect(addItemRes.status).toBe(302);
+  expect(addItemRes.headers.get("location")).toContain("/manage");
+
+  const managePage = await (await fetch(new URL("/m/legacy-moveout-2/manage", baseUrl), { headers: { Cookie: cookie } })).text();
+  expect(managePage).toContain("Added after claiming");
 });

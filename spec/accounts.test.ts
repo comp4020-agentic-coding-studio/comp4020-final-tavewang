@@ -153,13 +153,19 @@ it("logging out revokes the session — the old cookie value can't be replayed f
   const afterLogout = await fetch(new URL(moveout.manageUrl, baseUrl), { headers: { Cookie: sessionCookie } });
   expect(afterLogout.status).toBe(403);
 
+  // This round's fix checks "is this request signed in at all" BEFORE any
+  // ownership check (src/session.ts#requireSignedIn) — so a write attempt
+  // with no live session now redirects to /login (302) rather than falling
+  // through to isCreator's own 404. Either way, the write itself never
+  // happens; the redirect is the earlier, more specific rejection.
   const addRes = await fetch(new URL(`/m/${moveout.moveoutId}/timeslots`, baseUrl), {
     method: "POST",
     redirect: "manual",
     headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: sessionCookie },
     body: new URLSearchParams({ startsAt: futureLocalDateTime(2), endsAt: futureLocalDateTime(3) }).toString(),
   });
-  expect(addRes.status).toBe(404);
+  expect(addRes.status).toBe(302);
+  expect(addRes.headers.get("location")).toContain("/login");
 });
 
 it("rejects registering with an email already in use, and rejects login with a wrong password or unknown email", async () => {

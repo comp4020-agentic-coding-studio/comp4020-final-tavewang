@@ -9,9 +9,10 @@ import {
   listMoveoutsCreatedBy,
   listMoveoutsCreatedByAccount,
 } from "../ownership.ts";
-import { notifyDevice, onDeviceChange, pumpSSE } from "../live.ts";
+import { notifyAccount, notifyDevice, onAccountChange, onDeviceChange, pumpSSE } from "../live.ts";
 import { mineView } from "../views/home.ts";
 import { logEvent } from "../log.ts";
+import { requireSignedIn } from "../session.ts";
 
 export const homeRoutes = new Hono();
 
@@ -19,9 +20,28 @@ export const homeRoutes = new Hono();
 // move-out this browser has touched. `deviceId` comes from the cookie
 // (src/session.ts), never from anything the client sends, so a visitor can
 // only ever subscribe to their own updates.
+//
+// When signed in, this ALSO subscribes to the account-scoped bus — fixing a
+// real bug: device A creating a page while device B (signed into the same
+// account) had "My MoveOut" open didn't notify B at all, since the device
+// bus only ever hears about writes made BY that specific device. Which
+// account to subscribe to is resolved from `c.get("account")` — the live,
+// server-verified session — never from a client-supplied id, so one
+// account can never subscribe to (or receive) another's notifications.
 homeRoutes.get("/events", (c) => {
   const deviceId = c.get("deviceId");
-  return streamSSE(c, (stream) => pumpSSE(stream, (notify) => onDeviceChange(deviceId, notify)));
+  const accountId = c.get("account")?.id;
+  return streamSSE(c, (stream) =>
+    pumpSSE(stream, (notify) => {
+      const unsubscribeDevice = onDeviceChange(deviceId, notify);
+      if (!accountId) return unsubscribeDevice;
+      const unsubscribeAccount = onAccountChange(accountId, notify);
+      return () => {
+        unsubscribeDevice();
+        unsubscribeAccount();
+      };
+    }),
+  );
 });
 
 // Crit 11: "/" is now the public Browse pool (src/routes/browse.ts) — this
@@ -43,16 +63,17 @@ homeRoutes.get("/mine", (c) => {
 
 homeRoutes.post("/moveouts", async (c) => {
   const deviceId = c.get("deviceId");
-  const account = c.get("account");
   // Creating a page requires an account (this round's brief) — enforced
   // here on the server, not just by hiding the form in mineView, since a
   // hidden form is not a security boundary. A GET-redirect to login (not a
   // 403) is deliberate: an unauthenticated visitor should be offered the
   // chance to sign in and come straight back, not just rejected.
-  if (!account) {
+  const signinRedirect = requireSignedIn(c, "/mine");
+  if (signinRedirect) {
     logEvent({ event: "moveout.create", actor: deviceId, outcome: "denied", status: 401, reasonCode: "not_signed_in" });
-    return c.redirect(`/login?next=${encodeURIComponent("/mine")}&reason=signin_required`);
+    return signinRedirect;
   }
+  const account = c.get("account")!;
   const form = await c.req.formData();
   const title = String(form.get("title") ?? "").trim();
   const area = String(form.get("area") ?? "").trim();
@@ -90,7 +111,11 @@ homeRoutes.post("/moveouts", async (c) => {
   logEvent({ event: "moveout.create", actor: deviceId, outcome: "success", moveoutId: id, reasonCode: visibility });
 
   // So another already-open tab on this same device ("My MoveOut"'s "Your
-  // move-out pages" list) picks this up without a manual reload.
+  // move-out pages" list) picks this up without a manual reload — and, now
+  // that creation always happens signed in, so does every OTHER device
+  // signed into the same account with "My MoveOut" open (the bug this round
+  // fixes: this used to only ever notify the creating device).
   notifyDevice(deviceId);
+  notifyAccount(account.id);
   return c.redirect(`/m/${id}/manage`);
 });

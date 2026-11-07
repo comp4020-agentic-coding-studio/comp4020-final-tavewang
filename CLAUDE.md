@@ -57,6 +57,26 @@ not a quiet exception here.
   route that adds a new creator-only or claimant-only action must call
   these shared functions, not write its own `=== deviceId` or
   `deviceId || accountId` check.
+- **Recognising a device is not the same as authorizing a write, and every
+  write route must check both, in that order.** A second real vulnerability,
+  found and fixed this round: `isCreator`/`isClaimant` correctly recognise
+  an UNBOUND (still-unclaimed) page or application by device id alone —
+  that's the "identity stays device-only until claimed" rule directly
+  above, and it's needed to let old data be found and claimed at all. But
+  several write routes (add item/photo, add timeslot, change visibility,
+  withdraw, apply, confirm/cancel/complete, departure, change timeslot,
+  propose/accept/decline/withdraw a reschedule) treated that recognition
+  alone as sufficient authorization, with no separate check that the
+  request was actually signed in — so a visitor who still held an old
+  device cookie could keep publishing/modifying an unclaimed page's data
+  anonymously forever, never once needing to register. `src/session.ts
+  #requireSignedIn(c, fallback)` is the one gate every write route must call
+  FIRST, before any ownership check and before touching the database or
+  saving an uploaded file — it redirects to `/login?next=...` (never a bare
+  403) when there's no live session, same pattern as the existing
+  publish/apply gates. An ownership check alone is never sufficient
+  authorization for a write in this app; it answers "whose data is this,"
+  not "is this request allowed to act at all."
 - **This was a real vulnerability, found and fixed this round.** The
   previous rule was an OR (device match OR account match, device checked
   first) — so signing out (which only deletes the session row) never
@@ -160,6 +180,33 @@ not a quiet exception here.
   immediately (the next full reload still shows the truth) — it just means
   an already-open Browse tab goes stale, which is what crit 9's whole
   real-time apparatus (see below) exists to prevent.
+
+## One active request per PARTY, not per device
+
+- `applications_one_active_per_identity` (`src/db.ts`, a partial unique
+  index on `(item_id, COALESCE(claimer_account_id, claimer_device_id))`) is
+  the invariant: at most one active (`pending`/`confirmed`) application per
+  item per PARTY — where "party" is the same account-replaces-device rule
+  as everywhere else (an account once bound, a device until then). A third
+  real vulnerability, found and fixed this round: the previous index
+  (`applications_one_active_per_device`, scoped by device id alone) let the
+  SAME account, signed into two different devices, hold two independently-
+  valid active applications on one item, since each device had its own
+  distinct id the index never connected. Never scope a new "one active X
+  per Y" rule by device id alone once accounts exist — use `COALESCE(account,
+  device)` the same way, or it will silently reopen this gap for whatever
+  new entity it protects.
+- The dedup migration this required (`dedupeDuplicateAccountApplications`
+  in `src/db.ts`, guarded by `schema_migrations` like every other one-time
+  backfill here) is itself a model for any future "the old constraint
+  permitted something the new one won't" migration: find the pre-existing
+  violations, NEVER delete a row, keep exactly one per group (the confirmed
+  one if any exist, since an item can only ever have one; otherwise the
+  oldest pending one — first-request-wins, not a random pick), and cancel
+  every other one with a specific, auditable `cancel_reason` a person
+  reading the history can understand. See
+  `spec/duplicate-application-migration.test.ts` for the regression
+  coverage against a seeded pre-fix database shape.
 
 ## Two status columns, not one
 
@@ -269,6 +316,53 @@ currently listening."
   exact same route and ownership checks as a manual reload. **Never** put
   application data on that stream directly; the moment it needs to, it needs
   its own permission check, which defeats the reason it doesn't have one now.
+- **Three buses, not one**: `moveoutBus` (per move-out page), `deviceBus`
+  (per device — unchanged since before accounts), and `accountBus`
+  (per account, `src/live.ts#notifyAccount`/`#onAccountChange`, added this
+  round). A real vulnerability, found and fixed this round: "My MoveOut"'s
+  own subscription (`GET /events`, `src/routes/home.ts`) and every write
+  that called `notifyDevice()` were keyed purely by device id even once
+  accounts existed — so device A creating a page or sending a request never
+  woke device B's already-open "My MoveOut" tab, even when B was signed
+  into the exact same account, because the device bus only ever hears about
+  writes made BY that specific device. Any write that changes what an
+  ACCOUNT's own "My MoveOut" list shows (a new page, a new/confirmed/
+  cancelled/completed application, an accepted/declined/withdrawn
+  reschedule) must call `notifyAccount(accountId)` alongside the existing
+  `notifyDevice()` call, resolved from `c.get("account")?.id` — the live,
+  server-verified session — never from anything a client sends. `GET
+  /m/:id/events` subscribes to the requester's own device AND account bus
+  too (not just the moveout bus), for the same reason: a manage page or
+  claimant's public page left open in another tab needs to hear about a
+  logout or account switch, not just about changes to that one page.
+- **A permission failure and a network failure need different client-side
+  treatment, and conflating them was a real vulnerability.** Before this
+  round, `src/public/live.js#resync`'s `catch` block handled EVERY failed
+  re-fetch — a dropped connection, a 500, AND a 401/403 from a since-revoked
+  session — identically: show "Could not sync — retrying" and schedule
+  another attempt on an exponential backoff, forever, while the DOM still
+  shows whatever private content that tab fetched before access was lost.
+  Logging out in one tab (or switching accounts) never cleared a *different*
+  already-open tab's confirmed pickup address, "My MoveOut" entries, or
+  management controls — it just kept silently re-fetching a URL it could
+  never read again. `resync` now checks the response status BEFORE falling
+  into the retry branch: a 401/403 stops the SSE connection and any pending
+  reconnect/retry timer, then hard-navigates (`window.location.replace`) to
+  the same URL, so the SERVER's own rendered response (its real not-found/
+  forbidden/login view, built the same way a signed-out visitor's manual
+  reload would be) replaces the stale DOM. This doesn't add a new
+  client-side permission check — the server remains the sole authority
+  throughout, exactly as the next two bullets require — it only stops a
+  tab that's already been told "no" from pretending otherwise.
+- `POST /logout` (`src/routes/auth.ts`) calls `notifyDevice`/`notifyAccount`
+  for the signing-out identity right away, rather than waiting for some
+  unrelated future write to happen to touch something an open tab is
+  watching — this is what makes a stale tab notice a sibling tab's logout
+  within about a second (the resync path above) instead of only on its own
+  next `visibilitychange` poll, or possibly never if nothing else happens to
+  change on that page again. Logging out on one device must never notify or
+  revoke a DIFFERENT device's own independent session — this only ever
+  touches the signing-out request's own `deviceId`/`account.id`.
 - A write that depends on current state (confirm, cancel, apply, change
   timeslot) is validated against the live database row by its guarded
   `UPDATE ... WHERE status = '<state>'`, same as always — the real-time path

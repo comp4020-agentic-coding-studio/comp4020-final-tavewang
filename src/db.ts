@@ -318,6 +318,83 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS applications_claimer_account_idx ON applications (claimer_account_id);
 `);
 
+// A real bug, found this round: `applications_one_active_per_device` only
+// ever scoped uniqueness to (item_id, claimer_device_id) — so once accounts
+// existed, the SAME account signed into two different devices could submit
+// two independently-valid, non-duplicate-looking active applications for
+// the same item, because each had its own distinct device id. The intended
+// rule (CLAUDE.md) is one active request per PARTY, and a party is an
+// account once it has one, not a device — exactly the identity rule
+// src/ownership.ts#matchesOwner already uses for authorization, now also
+// enforced at the database level for this invariant.
+//
+// Migration order matters: any pre-existing duplicate rows (two active
+// applications from the same account on the same item, created before this
+// fix existed) must be resolved — not deleted — before the new unique index
+// can even be created, since SQLite refuses to build a UNIQUE index over
+// data that already violates it. `dedupeDuplicateAccountApplications` runs
+// exactly once (guarded by schema_migrations, not by "does the index already
+// exist", so a volume that already has the index can't skip a dedup pass it
+// still needs if somehow re-run against older data) and keeps a record of
+// every row it touches: the winning application's status/timeslot is
+// untouched, and every other active row for that (item, account) pair is
+// CANCELLED (never deleted) with a specific, auditable reason — preserving
+// its id, its history, and its link to the account that made it.
+function dedupeDuplicateAccountApplications(): void {
+  const duplicateGroups = db
+    .prepare(
+      `SELECT item_id, claimer_account_id FROM applications
+       WHERE status IN ('pending', 'confirmed') AND claimer_account_id IS NOT NULL
+       GROUP BY item_id, claimer_account_id
+       HAVING COUNT(*) > 1`,
+    )
+    .all() as unknown as { item_id: string; claimer_account_id: string }[];
+
+  for (const group of duplicateGroups) {
+    const activeApps = db
+      .prepare(
+        `SELECT id, status, created_at FROM applications
+         WHERE item_id = ? AND claimer_account_id = ? AND status IN ('pending', 'confirmed')
+         ORDER BY (status = 'confirmed') DESC, created_at ASC`,
+      )
+      .all(group.item_id, group.claimer_account_id) as unknown as { id: string; status: string; created_at: string }[];
+    // Keep exactly one: the confirmed one if there is one (an item can only
+    // ever have a single confirmed application at a time, so there's never
+    // more than one to prefer), otherwise the oldest pending request — the
+    // same "first request wins" principle a human reading the history would
+    // expect, never a random pick.
+    const [winner, ...losers] = activeApps;
+    for (const loser of losers) {
+      db.prepare(
+        `UPDATE applications SET status = 'cancelled', cancelled_at = datetime('now'),
+         cancel_reason = 'Automatically closed: this account already had another active request for this item from a different device.'
+         WHERE id = ? AND status IN ('pending', 'confirmed')`,
+      ).run(loser.id);
+    }
+    void winner;
+  }
+}
+
+if (!migrationApplied("dedupe_account_duplicate_applications")) {
+  withTransaction(() => {
+    dedupeDuplicateAccountApplications();
+  });
+  markMigrationApplied("dedupe_account_duplicate_applications");
+}
+
+// Supersedes applications_one_active_per_device: COALESCE(account, device)
+// means an unbound application is still scoped by device alone (unchanged
+// behaviour for pre-accounts data), while a bound one is scoped by account
+// regardless of which device sent it — closing the cross-device duplicate-
+// apply gap without weakening the existing device-level rule for anyone who
+// hasn't signed in.
+db.exec("DROP INDEX IF EXISTS applications_one_active_per_device");
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS applications_one_active_per_identity
+    ON applications (item_id, COALESCE(claimer_account_id, claimer_device_id))
+    WHERE status IN ('pending', 'confirmed');
+`);
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS reschedule_proposals (
     id TEXT PRIMARY KEY,

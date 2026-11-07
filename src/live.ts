@@ -11,6 +11,18 @@ import type { SSEStreamingApi } from "hono/streaming";
 
 const moveoutBus = new EventEmitter().setMaxListeners(0);
 const deviceBus = new EventEmitter().setMaxListeners(0);
+// A real bug, found this round: "My MoveOut"'s SSE subscription
+// (homeRoutes's GET /events) and every write that calls notifyDevice() were
+// still keyed purely by device id, even for a signed-in account — so device
+// A creating a page while device B (signed into the SAME account) had "My
+// MoveOut" open never woke B's tab up; B only saw it after a manual reload.
+// This bus is the account-scoped equivalent of deviceBus: a write that
+// changes what an ACCOUNT's own "My MoveOut" list shows notifies this bus
+// by account id (resolved server-side from the live session, never from
+// anything a client sends), and an anonymous device keeps using deviceBus
+// exactly as before — accounts don't replace that path, they add this one
+// alongside it for signed-in visitors.
+const accountBus = new EventEmitter().setMaxListeners(0);
 // Crit 11: one more bus, for the public browse pool. Carries exactly the
 // same "something changed, go re-fetch" signal as the other two — never
 // item/application data — so a subscriber who has an unlisted page's link
@@ -25,6 +37,14 @@ export function notifyMoveout(moveoutId: string): void {
 
 export function notifyDevice(deviceId: string): void {
   deviceBus.emit(deviceId);
+}
+
+// Call this (in addition to notifyDevice, never instead of it) whenever an
+// entity bound to an account changes in a way that affects what that
+// account's own "My MoveOut" list shows — a new page, a new application, or
+// a status change (confirm/cancel/complete) on an existing one.
+export function notifyAccount(accountId: string): void {
+  accountBus.emit(accountId);
 }
 
 // Call whenever a write could change what the public pool shows: a public
@@ -42,6 +62,11 @@ export function onMoveoutChange(moveoutId: string, listener: () => void): () => 
 export function onDeviceChange(deviceId: string, listener: () => void): () => void {
   deviceBus.on(deviceId, listener);
   return () => deviceBus.off(deviceId, listener);
+}
+
+export function onAccountChange(accountId: string, listener: () => void): () => void {
+  accountBus.on(accountId, listener);
+  return () => accountBus.off(accountId, listener);
 }
 
 export function onPublicPoolChange(listener: () => void): () => void {

@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import { db, withTransaction, type Application } from "../db.ts";
 import { getItem, getMoveout, isCreator } from "../ownership.ts";
-import { notifyDevice, notifyMoveout, notifyPublicPool } from "../live.ts";
+import { notifyAccount, notifyDevice, notifyMoveout, notifyPublicPool } from "../live.ts";
 import { logEvent } from "../log.ts";
+import { requireSignedIn } from "../session.ts";
 
 export const itemRoutes = new Hono();
 
@@ -11,16 +12,21 @@ itemRoutes.post("/items/:id/withdraw", (c) => {
   if (!item) return c.notFound();
   const moveout = getMoveout(item.moveout_id)!;
   const deviceId = c.get("deviceId");
+  const signinRedirect = requireSignedIn(c, `/m/${moveout.id}/manage`);
+  if (signinRedirect) {
+    logEvent({ event: "item.withdraw", actor: deviceId, outcome: "denied", moveoutId: moveout.id, itemId: item.id, status: 401, reasonCode: "not_signed_in" });
+    return signinRedirect;
+  }
   if (!isCreator(moveout, deviceId, c.get("account")?.id)) {
     logEvent({ event: "item.withdraw", actor: deviceId, outcome: "denied", moveoutId: moveout.id, itemId: item.id, status: 404, reasonCode: "not_creator" });
     return c.notFound();
   }
 
-  const { changed, cancelledDevices } = withTransaction(() => {
+  const { changed, cancelledDevices, cancelledAccounts } = withTransaction(() => {
     // Guarded: only an item that's still 'open' can be withdrawn — one with
     // an active reservation must be unclaimed first (CLAUDE.md).
     const result = db.prepare("UPDATE items SET status = 'withdrawn' WHERE id = ? AND status = 'open'").run(item.id);
-    if (result.changes === 0) return { changed: 0, cancelledDevices: [] as string[] };
+    if (result.changes === 0) return { changed: 0, cancelledDevices: [] as string[], cancelledAccounts: [] as string[] };
     const pending = db
       .prepare("SELECT * FROM applications WHERE item_id = ? AND status = 'pending'")
       .all(item.id) as unknown as Application[];
@@ -31,7 +37,11 @@ itemRoutes.post("/items/:id/withdraw", (c) => {
       `UPDATE applications SET status = 'cancelled', cancelled_at = datetime('now'), cancel_reason = 'Item withdrawn by the mover'
        WHERE item_id = ? AND status = 'pending'`,
     ).run(item.id);
-    return { changed: result.changes, cancelledDevices: pending.map((a) => a.claimer_device_id) };
+    return {
+      changed: result.changes,
+      cancelledDevices: pending.map((a) => a.claimer_device_id),
+      cancelledAccounts: pending.flatMap((a) => (a.claimer_account_id ? [a.claimer_account_id] : [])),
+    };
   });
 
   if (changed === 0) {
@@ -41,6 +51,7 @@ itemRoutes.post("/items/:id/withdraw", (c) => {
   logEvent({ event: "item.withdraw", actor: deviceId, outcome: "success", moveoutId: moveout.id, itemId: item.id });
   notifyMoveout(moveout.id);
   for (const cancelledDevice of cancelledDevices) notifyDevice(cancelledDevice);
+  for (const cancelledAccount of cancelledAccounts) notifyAccount(cancelledAccount);
   if (moveout.visibility === "public") notifyPublicPool();
   return c.redirect(`/m/${moveout.id}/manage`);
 });

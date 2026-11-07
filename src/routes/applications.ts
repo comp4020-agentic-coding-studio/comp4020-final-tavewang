@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import { db, withTransaction, type DepartureStatus, type Item, type Moveout, type Timeslot } from "../db.ts";
 import { getApplication, getItem, getMoveout, isClaimant, isCreator } from "../ownership.ts";
-import { notifyDevice, notifyMoveout, notifyPublicPool } from "../live.ts";
+import { notifyAccount, notifyDevice, notifyMoveout, notifyPublicPool } from "../live.ts";
 import { logEvent } from "../log.ts";
+import { requireSignedIn } from "../session.ts";
 
 const DEPARTURE_STATUSES: readonly DepartureStatus[] = ["not_departed", "departed", "arrived"];
 function isDepartureStatus(value: string): value is DepartureStatus {
@@ -36,6 +37,11 @@ applicationRoutes.post("/applications/:id/confirm", (c) => {
   const ctx = context(applicationId);
   if (!ctx) return c.notFound();
   const deviceId = c.get("deviceId");
+  const signinRedirect = requireSignedIn(c, `/m/${ctx.moveout.id}/manage`);
+  if (signinRedirect) {
+    logEvent({ event: "application.confirm", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 401, reasonCode: "not_signed_in" });
+    return signinRedirect;
+  }
   if (!isCreator(ctx.moveout, deviceId, c.get("account")?.id)) {
     logEvent({ event: "application.confirm", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 404, reasonCode: "not_creator" });
     return c.notFound();
@@ -98,6 +104,7 @@ applicationRoutes.post("/applications/:id/confirm", (c) => {
   logEvent({ event: "application.confirm", actor: deviceId, outcome: "success", moveoutId: ctx.moveout.id, itemId: ctx.item.id, applicationId, affectedDevice: app.claimer_device_id });
   notifyMoveout(ctx.moveout.id);
   notifyDevice(app.claimer_device_id);
+  if (app.claimer_account_id) notifyAccount(app.claimer_account_id);
   // The item just left 'open' — if it was public, it must disappear from
   // every open browse tab, not just stop appearing on the next full reload.
   if (ctx.moveout.visibility === "public") notifyPublicPool();
@@ -111,6 +118,11 @@ applicationRoutes.post("/applications/:id/cancel", async (c) => {
   const deviceId = c.get("deviceId");
   const app = getApplication(applicationId)!;
 
+  const signinRedirect = requireSignedIn(c, `/m/${ctx.moveout.id}`);
+  if (signinRedirect) {
+    logEvent({ event: "application.cancel", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, affectedDevice: app.claimer_device_id, status: 401, reasonCode: "not_signed_in" });
+    return signinRedirect;
+  }
   const accountId = c.get("account")?.id;
   const claimantMatch = isClaimant(app, deviceId, accountId);
   const isOwner = isCreator(ctx.moveout, deviceId, accountId);
@@ -162,6 +174,7 @@ applicationRoutes.post("/applications/:id/cancel", async (c) => {
   });
   notifyMoveout(ctx.moveout.id);
   notifyDevice(app.claimer_device_id);
+  if (app.claimer_account_id) notifyAccount(app.claimer_account_id);
   // Cancelling a CONFIRMED booking reopens the item (CLAUDE.md) — it can
   // reappear in a public pool it had dropped out of.
   if (ctx.moveout.visibility === "public" && app.status === "confirmed") notifyPublicPool();
@@ -173,6 +186,11 @@ applicationRoutes.post("/applications/:id/complete", (c) => {
   const ctx = context(applicationId);
   if (!ctx) return c.notFound();
   const deviceId = c.get("deviceId");
+  const signinRedirect = requireSignedIn(c, `/m/${ctx.moveout.id}/manage`);
+  if (signinRedirect) {
+    logEvent({ event: "application.complete", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 401, reasonCode: "not_signed_in" });
+    return signinRedirect;
+  }
   if (!isCreator(ctx.moveout, deviceId, c.get("account")?.id)) {
     logEvent({ event: "application.complete", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 404, reasonCode: "not_creator" });
     return c.notFound();
@@ -199,6 +217,7 @@ applicationRoutes.post("/applications/:id/complete", (c) => {
   logEvent({ event: "application.complete", actor: deviceId, outcome: "success", moveoutId: ctx.moveout.id, itemId: ctx.item.id, applicationId, affectedDevice: app.claimer_device_id });
   notifyMoveout(ctx.moveout.id);
   notifyDevice(app.claimer_device_id);
+  if (app.claimer_account_id) notifyAccount(app.claimer_account_id);
   return c.redirect(`/m/${ctx.moveout.id}/manage`);
 });
 
@@ -208,6 +227,11 @@ applicationRoutes.post("/applications/:id/departure", async (c) => {
   if (!ctx) return c.notFound();
   const deviceId = c.get("deviceId");
   const app = getApplication(applicationId)!;
+  const signinRedirect = requireSignedIn(c, `/m/${ctx.moveout.id}`);
+  if (signinRedirect) {
+    logEvent({ event: "application.departure", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 401, reasonCode: "not_signed_in" });
+    return signinRedirect;
+  }
   if (!isClaimant(app, deviceId, c.get("account")?.id)) {
     logEvent({ event: "application.departure", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 404, reasonCode: "not_claimant" });
     return c.notFound();
@@ -243,6 +267,11 @@ applicationRoutes.post("/applications/:id/timeslot", async (c) => {
   if (!ctx) return c.notFound();
   const app = getApplication(applicationId)!;
   const deviceId = c.get("deviceId");
+  const signinRedirect = requireSignedIn(c, `/m/${ctx.moveout.id}`);
+  if (signinRedirect) {
+    logEvent({ event: "application.timeslot", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 401, reasonCode: "not_signed_in" });
+    return signinRedirect;
+  }
   if (!isClaimant(app, deviceId, c.get("account")?.id)) {
     logEvent({ event: "application.timeslot", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 404, reasonCode: "not_claimant" });
     return c.notFound();

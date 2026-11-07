@@ -303,6 +303,124 @@ async function runAt(viewport, browser) {
   }, `${publicUrl}/items/does-not-matter/withdraw`);
   check(`[${viewport.name}] a direct POST write with the stale cookie is rejected (not a 2xx)`, replayWrite >= 400);
 
+  // ---- 7: an open tab's private content clears when logged out elsewhere -
+  // The real scenario the brief asks for: TWO TABS of the SAME browser
+  // (same cookie jar — a single BrowserContext, two Pages), one left open
+  // on a page showing private content, logout happening in the OTHER tab —
+  // and the first tab must notice and clear that content on its own,
+  // without this script ever reloading it by hand. A bare "GET the manage
+  // URL again, see 403" (what step 6 above checks) does NOT prove this: the
+  // bug was specifically that an already-open tab kept SHOWING its
+  // already-fetched private DOM indefinitely, not that a fresh request
+  // would fail.
+  console.log("[7] an already-open tab (same browser, second tab) clears its private content when logout happens in a sibling tab");
+  const sessionEmail = `verify-session-${viewport.width}-${Date.now()}@example.com`;
+  const sessionPassword = "a-strong-password-123";
+  const sharedCtx = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  const tabA = await sharedCtx.newPage();
+  await register(tabA, sessionEmail, sessionPassword);
+  const sessionManageUrl = await createMoveoutPage(tabA, { title: `Stale-tab test ${viewport.width}`, pickupLocation: "Stale Tab Secret Door", nickname: "Owner" });
+
+  // tabB is a SECOND tab in the SAME context — same cookies, genuinely left
+  // open on the manage page (which shows the exact pickup location,
+  // management controls, etc., all private to this account).
+  const tabB = await sharedCtx.newPage();
+  await safeGoto(tabB, sessionManageUrl);
+  await tabB.waitForLoadState("networkidle");
+  const tabBShowsPrivateBefore = (await tabB.locator("body").innerText()).includes("Stale Tab Secret Door");
+  check(`[${viewport.name}] setup: the open second tab shows this account's private pickup location before logout`, tabBShowsPrivateBefore);
+
+  // Logout happens in tabA — tabB never navigates, never reloads; its only
+  // path to finding out is its own SSE "sync" event (src/routes/auth.ts's
+  // logout now calls notifyDevice/notifyAccount) triggering a resync
+  // (src/public/live.js), which re-fetches and gets a 401/403 back.
+  await tabA.locator('form[action="/logout"] button[type="submit"]').click({ force: true });
+  await tabA.waitForLoadState("networkidle");
+
+  const tabBCleared = await waitFor(async () => {
+    const text = await tabB.locator("body").innerText().catch(() => "");
+    return !text.includes("Stale Tab Secret Door");
+  }, { timeout: 5000 });
+  check(`[${viewport.name}] the open second tab's private pickup location is gone within ~5s, with no manual reload from this script`, tabBCleared);
+
+  // It must land somewhere that doesn't re-show management/private content
+  // either — not just blank the one string checked above.
+  const tabBFinalText = await tabB.locator("body").innerText().catch(() => "");
+  check(
+    `[${viewport.name}] the cleared tab shows a not-signed-in/not-found view, not leftover management controls`,
+    !tabBFinalText.includes("Withdraw") && !tabBFinalText.includes("Confirm"),
+  );
+  await sharedCtx.close();
+
+  // ---- 8: two devices, same account, can't both actively claim one item -
+  console.log("[8] two devices signed into the same account can't hold two active requests for the same item");
+  const dupEmail = `verify-dup-${viewport.width}-${Date.now()}@example.com`;
+  const dupPassword = "a-strong-password-123";
+  const dupOwnerCtx = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  const dupOwner = await dupOwnerCtx.newPage();
+  await register(dupOwner, `verify-dup-owner-${viewport.width}-${Date.now()}@example.com`, dupPassword);
+  const dupManageUrl = await createMoveoutPage(dupOwner, { title: `Dup-apply test ${viewport.width}`, pickupLocation: "Door", nickname: "Owner" });
+  await addTimeslot(dupOwner);
+  await addItem(dupOwner, "Dup Item");
+  const dupPublicUrl = dupManageUrl.replace("/manage", "");
+
+  const dupDevice1Ctx = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  const dupDevice1 = await dupDevice1Ctx.newPage();
+  await register(dupDevice1, dupEmail, dupPassword);
+  await safeGoto(dupDevice1, dupPublicUrl);
+  const dupItemCard1 = dupDevice1.locator("li.item-card").first();
+  await dupItemCard1.locator('summary:has-text("Request this")').click({ force: true });
+  await dupItemCard1.locator('input[name="nickname"]').fill("First device");
+  const [dupApply1] = await Promise.all([
+    dupDevice1.waitForResponse((r) => r.url().includes("/apply") && r.request().method() === "POST"),
+    dupItemCard1.locator('form[action*="/apply"] button[type="submit"]').click({ force: true }),
+  ]);
+  check(`[${viewport.name}] the first device's apply for the item succeeds`, dupApply1.status() < 400);
+
+  const dupDevice2Ctx = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  const dupDevice2 = await dupDevice2Ctx.newPage();
+  await login(dupDevice2, dupEmail, dupPassword);
+  await safeGoto(dupDevice2, dupPublicUrl);
+  // "Your requests" also renders `li.item-card` rows (keyed by
+  // data-application-id) — this has to scope to the public items list
+  // (data-live-list="public-items", keyed by data-item-id) specifically, or
+  // `.first()` finds the "Your requests" row instead and proves nothing.
+  const dupItemCard2 = dupDevice2.locator('[data-live-list="public-items"] li.item-card').first();
+  const dupItemCard2Text = await dupItemCard2.innerText().catch(() => "");
+  const alreadyRequestedShown = dupItemCard2Text.includes("already requested");
+  check(`[${viewport.name}] the second device (same account) sees "already requested" rather than a fresh apply form`, alreadyRequestedShown);
+  await dupOwnerCtx.close();
+  await dupDevice1Ctx.close();
+  await dupDevice2Ctx.close();
+
+  // ---- 9: My MoveOut live-updates across devices on the same account -----
+  console.log("[9] device B's My MoveOut updates live when device A (same account) creates a page, without B reloading");
+  const syncEmail = `verify-sync-${viewport.width}-${Date.now()}@example.com`;
+  const syncPassword = "a-strong-password-123";
+  const deviceACtx = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  const deviceA = await deviceACtx.newPage();
+  await register(deviceA, syncEmail, syncPassword);
+
+  const deviceBCtx = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  const deviceB = await deviceBCtx.newPage();
+  await login(deviceB, syncEmail, syncPassword);
+  await safeGoto(deviceB, `${BASE_URL}/mine`);
+  await deviceB.waitForLoadState("networkidle");
+
+  const pageTitle = `Cross-device sync test ${viewport.width}`;
+  await createMoveoutPage(deviceA, { title: pageTitle, pickupLocation: "Door", nickname: "Owner" });
+
+  // deviceB never navigates or reloads — only its own SSE "sync" event
+  // (src/live.ts#notifyAccount, wired into homeRoutes's GET /events) and
+  // live.js's resync should bring the new page into view.
+  const deviceBSeesNewPage = await waitFor(async () => {
+    const text = await deviceB.locator("body").innerText().catch(() => "");
+    return text.includes(pageTitle);
+  }, { timeout: 5000 });
+  check(`[${viewport.name}] device B's already-open My MoveOut shows device A's new page within ~5s, with no reload`, deviceBSeesNewPage);
+  await deviceACtx.close();
+  await deviceBCtx.close();
+
   await ownerCtx.close();
   await secondCtx.close();
   await claimantCtx.close();

@@ -2,10 +2,11 @@ import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { db, isItemCategory, type Application, type Item, type Timeslot } from "../db.ts";
 import { getMoveout, isCreator, listItems, listTimeslots, ownerMatchSql, pendingRescheduleView } from "../ownership.ts";
+import { requireSignedIn } from "../session.ts";
 import { newId } from "../ids.ts";
 import { zonedDateTimeToUtc } from "../tz.ts";
 import { saveUploadedPhoto, isUploadRejection } from "../uploads.ts";
-import { notifyDevice, notifyMoveout, notifyPublicPool, onMoveoutChange, pumpSSE } from "../live.ts";
+import { notifyAccount, notifyDevice, notifyMoveout, notifyPublicPool, onAccountChange, onDeviceChange, onMoveoutChange, pumpSSE } from "../live.ts";
 import { moveoutPublicView, moveoutNotFoundView } from "../views/moveout-public.ts";
 import { moveoutManageView, type OpenItemEntry, type UpcomingEntry, type CompletedEntry } from "../views/moveout-manage.ts";
 import { logEvent } from "../log.ts";
@@ -164,6 +165,15 @@ moveoutRoutes.post("/m/:id/visibility", async (c) => {
   const moveout = getMoveout(c.req.param("id"));
   if (!moveout) return c.notFound();
   const deviceId = c.get("deviceId");
+  // Login is required before any business-permission check, on every write
+  // route — otherwise an old, still-unclaimed page's matching device cookie
+  // alone would let an anonymous visitor act on it forever (this round's
+  // fix; see src/session.ts#requireSignedIn).
+  const signinRedirect = requireSignedIn(c, `/m/${moveout.id}/manage`);
+  if (signinRedirect) {
+    logEvent({ event: "moveout.visibility", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 401, reasonCode: "not_signed_in" });
+    return signinRedirect;
+  }
   if (!isCreator(moveout, deviceId, c.get("account")?.id)) {
     logEvent({ event: "moveout.visibility", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 404, reasonCode: "not_creator" });
     return c.notFound();
@@ -190,16 +200,49 @@ moveoutRoutes.post("/m/:id/visibility", async (c) => {
 // public visitor or creator alike, re-fetches the page they already had
 // permission to see, and that fetch re-runs the usual ownership checks. So
 // this stream needs no permission check beyond "the page exists".
+//
+// ALSO subscribes to this specific requester's own device/account bus — a
+// real bug fixed this round: logging out in one tab only ever notified
+// src/routes/home.ts's device-scoped "My MoveOut" stream, so a manage page
+// or a claimant's own public page left open in ANOTHER tab never got a
+// "sync" signal at all and kept showing private content (the exact pickup
+// address, management controls) until something else unrelated happened to
+// touch this specific moveout. Now /logout's notifyDevice/notifyAccount
+// (src/routes/auth.ts) reaches every open tab for that identity, on every
+// page, not just the home page — each tab's own resync (src/public/live.js)
+// is what actually re-checks permission and reacts to the resulting 401/403.
 moveoutRoutes.get("/m/:id/events", (c) => {
   const moveoutId = c.req.param("id");
   if (!getMoveout(moveoutId)) return c.notFound();
-  return streamSSE(c, (stream) => pumpSSE(stream, (notify) => onMoveoutChange(moveoutId, notify)));
+  const deviceId = c.get("deviceId");
+  const accountId = c.get("account")?.id;
+  return streamSSE(c, (stream) =>
+    pumpSSE(stream, (notify) => {
+      const unsubscribeMoveout = onMoveoutChange(moveoutId, notify);
+      const unsubscribeDevice = onDeviceChange(deviceId, notify);
+      const unsubscribeAccount = accountId ? onAccountChange(accountId, notify) : undefined;
+      return () => {
+        unsubscribeMoveout();
+        unsubscribeDevice();
+        unsubscribeAccount?.();
+      };
+    }),
+  );
 });
 
 moveoutRoutes.post("/m/:id/items", async (c) => {
   const moveout = getMoveout(c.req.param("id"));
   if (!moveout) return c.notFound();
   const deviceId = c.get("deviceId");
+  // Must be checked, and must reject, BEFORE any upload or database write —
+  // an anonymous request to this route (even one whose device cookie
+  // matches an old, still-unclaimed page's creator_device_id) must create
+  // nothing at all, not even a rejected-but-already-saved photo file.
+  const signinRedirect = requireSignedIn(c, `/m/${moveout.id}/manage`);
+  if (signinRedirect) {
+    logEvent({ event: "item.add", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 401, reasonCode: "not_signed_in" });
+    return signinRedirect;
+  }
   if (!isCreator(moveout, deviceId, c.get("account")?.id)) {
     logEvent({ event: "item.add", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 404, reasonCode: "not_creator" });
     return c.notFound();
@@ -238,6 +281,11 @@ moveoutRoutes.post("/m/:id/timeslots", async (c) => {
   const moveout = getMoveout(c.req.param("id"));
   if (!moveout) return c.notFound();
   const deviceId = c.get("deviceId");
+  const signinRedirect = requireSignedIn(c, `/m/${moveout.id}/manage`);
+  if (signinRedirect) {
+    logEvent({ event: "timeslot.add", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 401, reasonCode: "not_signed_in" });
+    return signinRedirect;
+  }
   if (!isCreator(moveout, deviceId, c.get("account")?.id)) {
     logEvent({ event: "timeslot.add", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 404, reasonCode: "not_creator" });
     return c.notFound();
@@ -269,16 +317,12 @@ moveoutRoutes.post("/m/:id/apply", async (c) => {
   const moveout = getMoveout(c.req.param("id"));
   if (!moveout) return c.notFound();
   const deviceId = c.get("deviceId");
-  const account = c.get("account");
-  // Sending a request requires an account (this round's brief) — enforced
-  // server-side, same reasoning as POST /moveouts above. Following the
-  // same "redirect to login with next, never 403" pattern: the data-ajax
-  // client (src/public/live.js) follows this redirect and lands the
-  // browser on the login page, rather than treating it as a hard error.
-  if (!account) {
+  const signinRedirect = requireSignedIn(c, `/m/${moveout.id}`);
+  if (signinRedirect) {
     logEvent({ event: "application.apply", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 401, reasonCode: "not_signed_in" });
-    return c.redirect(`/login?next=${encodeURIComponent(`/m/${moveout.id}`)}&reason=signin_required`);
+    return signinRedirect;
   }
+  const account = c.get("account")!;
   if (isCreator(moveout, deviceId, account.id)) {
     logEvent({ event: "application.apply", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 400, reasonCode: "self_request" });
     return c.text("You can't request your own item.", 400);
@@ -341,6 +385,7 @@ moveoutRoutes.post("/m/:id/apply", async (c) => {
 
   notifyMoveout(moveout.id);
   notifyDevice(deviceId);
+  notifyAccount(account.id);
   // Applying for the last open slot on an item doesn't change items.status
   // (still 'open' until confirmed) — so the pool itself only changes once
   // this gets confirmed or the item's withdrawn, both handled where those
