@@ -22,10 +22,10 @@ export async function mineView(
     <p class="muted">
       ${account
         ? html`Signed in as ${account.email} — log in with this account on another device to reach these same pages and requests.`
-        : html`This browser remembers who you are; clearing its cookies or switching
-            browsers loses that identity. <a href="/register">Register</a> or
-            <a href="/login">log in</a> to reach your pages and requests from
-            another device instead.`}
+        : html`You'll need to <a href="/login?next=${encodeURIComponent("/mine")}">log in</a> or
+            <a href="/register?next=${encodeURIComponent("/mine")}">register</a> to create a page or send a
+            request. If this browser has an older page or request from before you had an account, signing
+            in links it automatically — it's never lost.`}
     </p>
     ${opts.error ? html`<p class="error" role="alert">${opts.error}</p>` : ""}
     <section data-live-section="my-moveouts" ${myMoveouts.length === 0 ? "hidden" : ""}>
@@ -61,48 +61,61 @@ export async function mineView(
             )}
       </ul>
     </section>
-    <section>
-      <h2>Start a move-out page</h2>
-      <form method="post" action="/moveouts" class="stacked-form">
-        <div class="field">
-          <label for="title">Title</label>
-          <input id="title" name="title" required maxlength="100" placeholder="e.g. Sam's room clear-out" />
-        </div>
-        <div class="field">
-          <label for="area">Area (shown publicly — e.g. your hall or suburb)</label>
-          <input id="area" name="area" required maxlength="80" placeholder="e.g. Fenner Hall" />
-        </div>
-        <div class="field">
-          <label for="pickupLocation">Exact pickup spot (only shown once a request is confirmed)</label>
-          <input id="pickupLocation" name="pickupLocation" required maxlength="140" placeholder="e.g. Fenner Hall, Room 214, side door" />
-        </div>
-        <div class="field">
-          <label for="deadline">Everything must be gone by</label>
-          <input id="deadline" name="deadline" type="datetime-local" required />
-        </div>
-        <div class="field">
-          <label for="timezone">Timezone</label>
-          <input id="timezone" name="timezone" value="Australia/Sydney" required maxlength="60" />
-        </div>
-        <div class="field">
-          <label for="nickname">Your name</label>
-          <input id="nickname" name="nickname" required maxlength="40" placeholder="What should people call you?" />
-        </div>
-        <fieldset class="field visibility-field">
-          <legend>Who can find this page?</legend>
-          <label class="radio-row">
-            <input type="radio" name="visibility" value="public" checked />
-            <span><strong>Public</strong> — its open items appear in Browse for anyone to find.</span>
-          </label>
-          <label class="radio-row">
-            <input type="radio" name="visibility" value="unlisted" />
-            <span><strong>Unlisted</strong> — only reachable by the link you share; never in Browse.</span>
-          </label>
-          <p class="muted">You can change this later from the page's manage view.</p>
-        </fieldset>
-        <button type="submit">Create move-out page</button>
-      </form>
-    </section>
+    ${account
+      ? html`
+          <section>
+            <h2>Start a move-out page</h2>
+            <form method="post" action="/moveouts" class="stacked-form">
+              <div class="field">
+                <label for="title">Title</label>
+                <input id="title" name="title" required maxlength="100" placeholder="e.g. Sam's room clear-out" />
+              </div>
+              <div class="field">
+                <label for="area">Area (shown publicly — e.g. your hall or suburb)</label>
+                <input id="area" name="area" required maxlength="80" placeholder="e.g. Fenner Hall" />
+              </div>
+              <div class="field">
+                <label for="pickupLocation">Exact pickup spot (only shown once a request is confirmed)</label>
+                <input id="pickupLocation" name="pickupLocation" required maxlength="140" placeholder="e.g. Fenner Hall, Room 214, side door" />
+              </div>
+              <div class="field">
+                <label for="deadline">Everything must be gone by</label>
+                <input id="deadline" name="deadline" type="datetime-local" required />
+              </div>
+              <div class="field">
+                <label for="timezone">Timezone</label>
+                <input id="timezone" name="timezone" value="Australia/Sydney" required maxlength="60" />
+              </div>
+              <div class="field">
+                <label for="nickname">Your name</label>
+                <input id="nickname" name="nickname" required maxlength="40" placeholder="What should people call you?" />
+              </div>
+              <fieldset class="field visibility-field">
+                <legend>Who can find this page?</legend>
+                <label class="radio-row">
+                  <input type="radio" name="visibility" value="public" checked />
+                  <span><strong>Public</strong> — its open items appear in Browse for anyone to find.</span>
+                </label>
+                <label class="radio-row">
+                  <input type="radio" name="visibility" value="unlisted" />
+                  <span><strong>Unlisted</strong> — only reachable by the link you share; never in Browse.</span>
+                </label>
+                <p class="muted">You can change this later from the page's manage view.</p>
+              </fieldset>
+              <button type="submit">Create move-out page</button>
+            </form>
+          </section>
+        `
+      : html`
+          <section>
+            <h2>Start a move-out page</h2>
+            <p>
+              <a href="/login?next=${encodeURIComponent("/mine")}">Log in</a> or
+              <a href="/register?next=${encodeURIComponent("/mine")}">register</a> first — creating a page
+              requires an account.
+            </p>
+          </section>
+        `}
 
     <script src="/live.js" data-live="/events"></script>
   `;

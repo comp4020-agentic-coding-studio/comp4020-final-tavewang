@@ -8,6 +8,7 @@ import {
   firstTimeslotId,
   futureLocalDateTime,
   locationOf,
+  makeAnonymousClient,
   makeClient,
   myOwnApplicationId,
 } from "./helpers.ts";
@@ -15,13 +16,13 @@ import {
 const baseUrl = inject("baseUrl");
 
 async function setUpOpenItem(ownerNickname: string, title: string) {
-  const owner = makeClient(baseUrl);
+  const owner = await makeClient(baseUrl);
   const moveout = await createMoveout(owner, { title, deadline: futureLocalDateTime(72), nickname: ownerNickname });
   await addTimeslot(owner, moveout.moveoutId, futureLocalDateTime(2), futureLocalDateTime(3));
   const itemId = await addItem(owner, moveout.moveoutId, { name: "Desk Lamp" });
   // the owner's GET on their own page redirects to /manage (no apply form
   // there), so a separate visitor client reads the actual public page
-  const visitor = makeClient(baseUrl);
+  const visitor = await makeClient(baseUrl);
   const publicPage = await (await visitor.get(moveout.publicUrl)).text();
   const timeslotId = firstTimeslotId(publicPage, itemId);
   return { owner, moveout, itemId, timeslotId };
@@ -29,7 +30,7 @@ async function setUpOpenItem(ownerNickname: string, title: string) {
 
 it("a non-creator can't manage a move-out page or confirm its applications", async () => {
   const { owner, moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Manage-guard test");
-  const stranger = makeClient(baseUrl);
+  const stranger = await makeClient(baseUrl);
   await apply(stranger, moveout.moveoutId, { itemId, timeslotId, nickname: "Stranger" });
 
   expect((await stranger.get(moveout.manageUrl)).status).toBe(403);
@@ -46,7 +47,7 @@ it("a non-creator can't manage a move-out page or confirm its applications", asy
 
 it("non-creators are rejected on every creator-only write route (add item, add timeslot)", async () => {
   const { moveout } = await setUpOpenItem("Owner", "Creator-only routes test");
-  const stranger = makeClient(baseUrl);
+  const stranger = await makeClient(baseUrl);
 
   const itemForm = new FormData();
   itemForm.set("name", "Should not be added");
@@ -62,8 +63,8 @@ it("non-creators are rejected on every creator-only write route (add item, add t
 
 it("someone else can't change a claimant's own pending request's timeslot", async () => {
   const { moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Timeslot-guard test");
-  const bob = makeClient(baseUrl);
-  const carol = makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
+  const carol = await makeClient(baseUrl);
   await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob" });
 
   const bobView = await (await bob.get(moveout.publicUrl)).text();
@@ -76,8 +77,8 @@ it("someone else can't change a claimant's own pending request's timeslot", asyn
 
 it("two applicants who both actually use the nickname \"Sam\" on the SAME item stay two separate identities", async () => {
   const { owner, moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Same-nickname isolation test");
-  const same1 = makeClient(baseUrl);
-  const same2 = makeClient(baseUrl);
+  const same1 = await makeClient(baseUrl);
+  const same2 = await makeClient(baseUrl);
   // Both apply to the exact same item with the exact literal nickname "Sam"
   // — the unique constraint is (item_id, claimer_device_id), not nickname,
   // so this is allowed (same1 confirmable, same2 waitlisted), and it's the
@@ -112,7 +113,7 @@ it("two applicants who both actually use the nickname \"Sam\" on the SAME item s
 
 it("address visibility before and after confirmation, and a rejected action leaves status unchanged", async () => {
   const { owner, moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Address-visibility test");
-  const bob = makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
   await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob" });
 
   let bobView = await (await bob.get(moveout.publicUrl)).text();
@@ -123,7 +124,7 @@ it("address visibility before and after confirmation, and a rejected action leav
 
   // A stranger's rejected confirm attempt must not change the application's
   // status or reveal the address.
-  const stranger = makeClient(baseUrl);
+  const stranger = await makeClient(baseUrl);
   expect((await stranger.post(`/applications/${appId}/confirm`)).status).toBe(404);
   bobView = await (await bob.get(moveout.publicUrl)).text();
   expect(bobView).toContain("Waiting for confirmation");
@@ -137,8 +138,8 @@ it("address visibility before and after confirmation, and a rejected action leav
 
 it("a claimant can't cancel someone else's application", async () => {
   const { owner, moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Cancel-guard test");
-  const bob = makeClient(baseUrl);
-  const carol = makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
+  const carol = await makeClient(baseUrl);
   await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob" });
 
   const managePage = await (await owner.get(moveout.manageUrl)).text();
@@ -154,7 +155,7 @@ it("a claimant can't cancel someone else's application", async () => {
 
 it("an unconfirmed applicant never receives the pickup location", async () => {
   const { owner, moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Location-privacy test");
-  const bob = makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
   await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob" });
 
   const bobView = await (await bob.get(moveout.publicUrl)).text();
@@ -164,8 +165,8 @@ it("an unconfirmed applicant never receives the pickup location", async () => {
 
 it("an item can't have two active confirmations — two concurrent confirms resolve to exactly one", async () => {
   const { owner, moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Concurrency test");
-  const bob = makeClient(baseUrl);
-  const carol = makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
+  const carol = await makeClient(baseUrl);
   await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob" });
   await apply(carol, moveout.moveoutId, { itemId, timeslotId, nickname: "Carol" });
 
@@ -183,8 +184,8 @@ it("an item can't have two active confirmations — two concurrent confirms reso
 
 it("cancelling a confirmed booking reopens the item so a waitlisted request can be confirmed", async () => {
   const { owner, moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Reopen test");
-  const bob = makeClient(baseUrl);
-  const carol = makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
+  const carol = await makeClient(baseUrl);
   await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob" });
   await apply(carol, moveout.moveoutId, { itemId, timeslotId, nickname: "Carol" });
 
@@ -215,11 +216,11 @@ it("applying after the deadline is rejected", async () => {
   // deadline to actually pass would make this test slow and flaky. Instead,
   // create the page with its deadline already in the past directly — the
   // route's `now > deadline` guard doesn't care how it got that way.
-  const owner = makeClient(baseUrl);
+  const owner = await makeClient(baseUrl);
   const moveout = await createMoveout(owner, { title: "Past-deadline test", deadline: futureLocalDateTime(-1), nickname: "Owner" });
   const itemId = await addItem(owner, moveout.moveoutId, { name: "Too Late" });
 
-  const bob = makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
   // no valid timeslot can even exist on an already-expired page, but the
   // deadline check happens first regardless — pass a made-up id to prove
   // that's what's rejecting it, not a missing-timeslot 400.
@@ -229,7 +230,7 @@ it("applying after the deadline is rejected", async () => {
 
 it("a completed hand-off record is kept, and survives being looked at again", async () => {
   const { owner, moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Completion test");
-  const bob = makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
   await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob" });
   const managePage1 = await (await owner.get(moveout.manageUrl)).text();
   const appId = applicationIdFor(managePage1, "Bob");
@@ -251,14 +252,14 @@ it("the mover can't request their own item, and the same device can't double-app
   const { owner, moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Self-request guard test");
   expect((await apply(owner, moveout.moveoutId, { itemId, timeslotId, nickname: "Owner" })).status).toBe(400);
 
-  const bob = makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
   expect((await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob" })).status).toBe(302);
   expect((await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob again" })).status).toBe(409);
 });
 
 it("withdrawing an open item cancels its pending requests and removes it from the public list", async () => {
   const { owner, moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Withdraw test");
-  const bob = makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
   await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob" });
 
   expect((await owner.post(`/items/${itemId}/withdraw`)).status).toBe(302);
@@ -266,7 +267,7 @@ it("withdrawing an open item cancels its pending requests and removes it from th
   const bobView = await (await bob.get(moveout.publicUrl)).text();
   expect(bobView).toContain("Item withdrawn by the mover");
 
-  const publicPage = await (await makeClient(baseUrl).get(moveout.publicUrl)).text();
+  const publicPage = await (await makeAnonymousClient(baseUrl).get(moveout.publicUrl)).text();
   expect(publicPage).not.toContain("Desk Lamp");
 });
 
@@ -280,8 +281,8 @@ it("withdrawing an open item cancels its pending requests and removes it from th
 // also succeeding, inside the same all-or-nothing transaction.
 it("confirming an already-cancelled application fails without reserving the item, and a real pending request can still be confirmed", async () => {
   const { owner, moveout, itemId, timeslotId } = await setUpOpenItem("Owner", "Stale-confirm regression test");
-  const bob = makeClient(baseUrl);
-  const carol = makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
+  const carol = await makeClient(baseUrl);
   await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob" });
   await apply(carol, moveout.moveoutId, { itemId, timeslotId, nickname: "Carol" });
 
@@ -301,7 +302,7 @@ it("confirming an already-cancelled application fails without reserving the item
   // request it, and crucially Carol's real pending request can still be
   // confirmed — if the bug were present the item would be wrongly
   // 'reserved' with no confirmed application, and this would 409 too.
-  const publicPage = await (await makeClient(baseUrl).get(moveout.publicUrl)).text();
+  const publicPage = await (await makeAnonymousClient(baseUrl).get(moveout.publicUrl)).text();
   expect(publicPage).toContain("Desk Lamp");
 
   const carolConfirm = await owner.post(`/applications/${carolApp}/confirm`);

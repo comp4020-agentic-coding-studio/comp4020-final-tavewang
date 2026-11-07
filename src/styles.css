@@ -329,6 +329,14 @@ section form > button[type="submit"]:hover {
   font-weight: 600;
 }
 
+.notice {
+  background: var(--pending-bg);
+  color: var(--pending);
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+}
+
 .error-inline {
   color: var(--error);
   font-size: 0.86rem;

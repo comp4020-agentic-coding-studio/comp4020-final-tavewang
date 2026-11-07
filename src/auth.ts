@@ -1,14 +1,16 @@
 import { scryptSync, randomBytes, timingSafeEqual } from "node:crypto";
-import { db, type Account } from "./db.ts";
+import { db, withTransaction, type Account } from "./db.ts";
 import { newId } from "./ids.ts";
 
 // Accounts sit ON TOP OF the existing anonymous device-cookie identity
-// (src/session.ts) — never replace it. A device that never signs in behaves
-// exactly as before; signing in only ever ADDS the ability to also reach
-// your pages/requests from a different device. Every existing ownership
-// check (isCreator, a claimant's own application) keeps working on the
-// device id alone; accounts widen those checks to "OR this device's signed-
-// in account matches," never narrow them.
+// (src/session.ts): a device that never signs in, and whose data is never
+// claimed, behaves exactly as before. But once an entity (a move-out page,
+// an application) is claimed into an account, that account becomes the ONLY
+// valid credential for it — the device id that originally created it stops
+// counting, even from the same literal browser. src/ownership.ts's
+// `isCreator`/`isClaimant` enforce this; this file is what performs the
+// one-time, one-way claim that flips an entity from "device-owned" to
+// "account-owned."
 
 const SCRYPT_KEYLEN = 64;
 const SALT_BYTES = 16;
@@ -123,6 +125,20 @@ export function destroySession(sessionId: string): void {
   db.prepare("DELETE FROM account_sessions WHERE id = ?").run(sessionId);
 }
 
+// For the sign-in page's "you have old data waiting" notice: whether THIS
+// device has any still-unclaimed (account_id IS NULL) rows at all — a
+// count, never which pages or what they contain, since this is shown to a
+// visitor before they've proven who they are. Having unclaimed data on this
+// device never grants access to anything already bound to an account (that
+// decision is entirely isCreator/isClaimant's, downstream of actually
+// signing in) — this is purely informational.
+export function hasUnclaimedAnonymousData(deviceId: string): boolean {
+  const moveout = db.prepare("SELECT 1 FROM moveouts WHERE creator_device_id = ? AND creator_account_id IS NULL LIMIT 1").get(deviceId);
+  if (moveout) return true;
+  const application = db.prepare("SELECT 1 FROM applications WHERE claimer_device_id = ? AND claimer_account_id IS NULL LIMIT 1").get(deviceId);
+  return Boolean(application);
+}
+
 // ---- Claiming anonymous data into an account on login/register --------
 // The device that just signed in (or just registered) may already have
 // anonymous move-out pages and applications tied only to its device cookie.
@@ -132,18 +148,30 @@ export function destroySession(sessionId: string): void {
 // could otherwise influence), and only rows not already claimed by a
 // DIFFERENT account (so logging into account B on a device that previously
 // claimed data for account A can't silently reassign A's data to B).
+//
+// Wrapped in a transaction: the two UPDATEs below move different tables
+// (moveouts, applications) from device-owned to account-owned atomically —
+// a crash or error between them must not leave one table claimed and the
+// other not, which src/db.ts#withTransaction's rollback-on-throw guarantees.
+// Each individual UPDATE's own WHERE clause is still what makes it immune to
+// a race with a concurrent claim attempt (re-reading `creator_account_id`/
+// `claimer_account_id` at write time, not from an earlier read) — the
+// transaction adds cross-table atomicity on top of that, it isn't what
+// provides the race safety by itself.
 export function claimAnonymousDataForAccount(deviceId: string, accountId: string): { moveouts: number; applications: number } {
-  const moveoutsResult = db
-    .prepare(
-      `UPDATE moveouts SET creator_account_id = ?
-       WHERE creator_device_id = ? AND (creator_account_id IS NULL OR creator_account_id = ?)`,
-    )
-    .run(accountId, deviceId, accountId);
-  const applicationsResult = db
-    .prepare(
-      `UPDATE applications SET claimer_account_id = ?
-       WHERE claimer_device_id = ? AND (claimer_account_id IS NULL OR claimer_account_id = ?)`,
-    )
-    .run(accountId, deviceId, accountId);
-  return { moveouts: Number(moveoutsResult.changes), applications: Number(applicationsResult.changes) };
+  return withTransaction(() => {
+    const moveoutsResult = db
+      .prepare(
+        `UPDATE moveouts SET creator_account_id = ?
+         WHERE creator_device_id = ? AND (creator_account_id IS NULL OR creator_account_id = ?)`,
+      )
+      .run(accountId, deviceId, accountId);
+    const applicationsResult = db
+      .prepare(
+        `UPDATE applications SET claimer_account_id = ?
+         WHERE claimer_device_id = ? AND (claimer_account_id IS NULL OR claimer_account_id = ?)`,
+      )
+      .run(accountId, deviceId, accountId);
+    return { moveouts: Number(moveoutsResult.changes), applications: Number(applicationsResult.changes) };
+  });
 }

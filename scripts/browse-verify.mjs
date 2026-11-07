@@ -103,6 +103,12 @@ async function main() {
 
     // ---- setup: a mover posts a public item, never visited directly by bob
     const mover = await (await browser.newContext()).newPage();
+    const moverEmail = `verify-browse-mover-${Date.now()}@example.com`;
+    await mover.goto(`${BASE_URL}/register`);
+    await mover.fill("#email", moverEmail);
+    await mover.fill("#password", "a-strong-password-123");
+    await mover.locator('form[action="/register"] button[type="submit"]').click();
+    await mover.waitForLoadState("domcontentloaded");
     await mover.goto(`${BASE_URL}/mine`);
     await mover.fill("#title", "Browse-verify move-out");
     await mover.fill("#area", "Test Hall");
@@ -111,7 +117,7 @@ async function main() {
     await mover.fill("#timezone", TIMEZONE);
     await mover.fill("#nickname", "Mover");
     await mover.check('input[name="visibility"][value="public"]');
-    await mover.click('button[type="submit"]');
+    await mover.click('form[action="/moveouts"] button[type="submit"]');
     await mover.waitForURL(/\/manage$/);
     const manageUrl = mover.url();
 
@@ -129,6 +135,12 @@ async function main() {
     //        neither of which has ever opened the move-out's own URL directly
     console.log("\n[test 1] bob discovers the item from /readme/ -> Browse -> item page, having never visited the move-out URL");
     const bob = await (await browser.newContext()).newPage();
+    const bobEmail = `verify-browse-bob-${Date.now()}@example.com`;
+    await bob.goto(`${BASE_URL}/register`);
+    await bob.fill("#email", bobEmail);
+    await bob.fill("#password", "a-strong-password-123");
+    await bob.locator('form[action="/register"] button[type="submit"]').click();
+    await bob.waitForLoadState("domcontentloaded");
     await bob.goto(`${BASE_URL}/readme/`);
     await bob.click("text=Enter MoveOut");
     await bob.waitForURL(`${BASE_URL}/`);

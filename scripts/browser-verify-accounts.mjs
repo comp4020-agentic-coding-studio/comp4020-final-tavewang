@@ -1,14 +1,15 @@
 #!/usr/bin/env node
-// Manual, browser-level verification for accounts (src/auth.ts,
-// src/routes/auth.ts) — register/login/logout, claiming an existing
-// device's anonymous data into an account, and reaching that same account's
-// pages/requests from a genuinely different browser context. Not part of
-// `pnpm check` on purpose (same reasoning as scripts/browser-verify.mjs):
-// starts its own server on an isolated throwaway DATA_DIR and drives
-// multiple independent Playwright *contexts* with real Chrome — this is the
-// one thing spec/accounts.test.ts's HTTP-only tests can't themselves show:
-// a real page navigation, a real cookie jar, a visible "My MoveOut" page
-// actually listing the right content in a rendered browser.
+// Manual, browser-level acceptance for this round's permission/login-gate
+// fix: once a page or application is bound to an account, the device cookie
+// that created it must stop granting access (src/ownership.ts#matchesOwner),
+// publishing/applying now requires being signed in (src/routes/moveout.ts,
+// src/routes/home.ts), and logout must actually revoke the server-side
+// session, not just clear a cookie. Not part of `pnpm check` on purpose (same
+// reasoning as scripts/browser-verify.mjs): starts its own server on an
+// isolated throwaway DATA_DIR and drives multiple independent Playwright
+// *contexts* with real Chrome — the thing spec/accounts.test.ts and
+// spec/permission-regression.test.ts's HTTP-only tests can't themselves
+// show: a real page navigation, a real cookie jar, a visible rendered page.
 //
 // Usage: node scripts/browser-verify-accounts.mjs
 // Requires the same system Chrome as scripts/browser-verify.mjs.
@@ -22,6 +23,10 @@ const PORT = 8126;
 const BASE_URL = `http://localhost:${PORT}`;
 const dataDir = mkdtempSync(join(tmpdir(), "moveout-accounts-verify-"));
 const TIMEZONE = "Australia/Sydney";
+const VIEWPORTS = [
+  { name: "desktop 1920x1080", width: 1920, height: 1080 },
+  { name: "mobile 390x844", width: 390, height: 844 },
+];
 
 let passCount = 0;
 let failCount = 0;
@@ -109,6 +114,22 @@ async function safeGoto(page, url) {
   }
 }
 
+async function register(page, email, password, { next } = {}) {
+  await safeGoto(page, next ? `${BASE_URL}/register?next=${encodeURIComponent(next)}` : `${BASE_URL}/register`);
+  await page.fill("#email", email);
+  await page.fill("#password", password);
+  await page.locator('form[action="/register"] button[type="submit"]').click({ force: true });
+  await page.waitForLoadState("networkidle");
+}
+
+async function login(page, email, password, { next } = {}) {
+  await safeGoto(page, next ? `${BASE_URL}/login?next=${encodeURIComponent(next)}` : `${BASE_URL}/login`);
+  await page.fill("#email", email);
+  await page.fill("#password", password);
+  await page.locator('form[action="/login"] button[type="submit"]').click({ force: true });
+  await page.waitForLoadState("networkidle");
+}
+
 async function createMoveoutPage(page, { title, pickupLocation, nickname }) {
   await safeGoto(page, `${BASE_URL}/mine`);
   await page.fill("#title", title);
@@ -144,20 +165,150 @@ async function addItem(page, name) {
   await page.waitForFunction((n) => document.body.innerText.includes(n), name, { timeout: 5000 });
 }
 
-async function register(page, email, password) {
-  await safeGoto(page, `${BASE_URL}/register`);
-  await page.fill("#email", email);
-  await page.fill("#password", password);
-  await page.locator('form[action="/register"] button[type="submit"]').click({ force: true });
-  await page.waitForLoadState("networkidle");
-}
+async function runAt(viewport, browser) {
+  console.log(`\n=== viewport: ${viewport.name} ===`);
+  const email = `verify-${viewport.width}-${Date.now()}@example.com`;
+  const password = "a-strong-password-123";
 
-async function login(page, email, password) {
-  await safeGoto(page, `${BASE_URL}/login`);
-  await page.fill("#email", email);
-  await page.fill("#password", password);
-  await page.locator('form[action="/login"] button[type="submit"]').click({ force: true });
-  await page.waitForLoadState("networkidle");
+  // ---- 0: an unauthenticated visitor clicking "publish" is guided to log in
+  console.log("[0] an unauthenticated visitor is guided to log in before publishing, and before applying");
+  const anonCtx = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  const anon = await anonCtx.newPage();
+  await safeGoto(anon, `${BASE_URL}/mine`);
+  const minePromptsLogin = await anon.locator('a[href^="/login"]').first().isVisible().catch(() => false);
+  check(`[${viewport.name}] /mine prompts an anonymous visitor to log in, rather than showing the create-page form`, minePromptsLogin);
+  await anonCtx.close();
+
+  // ---- 1: a signed-in owner creates a page -------------------------------
+  console.log("[1] a signed-in owner creates and publishes a page");
+  const ownerCtx = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  const owner = await ownerCtx.newPage();
+  await register(owner, email, password);
+  const manageUrl = await createMoveoutPage(owner, { title: `Verify Account Page ${viewport.width}`, pickupLocation: "Door 1", nickname: "Owner" });
+  await addTimeslot(owner);
+  await addItem(owner, "Verify Lamp");
+  const publicUrl = manageUrl.replace("/manage", "");
+  const publicPath = new URL(publicUrl).pathname;
+
+  // An anonymous visitor to the public page is guided to log in rather than
+  // shown the apply form.
+  const visitorCtx = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  const visitor = await visitorCtx.newPage();
+  await safeGoto(visitor, publicUrl);
+  const applyPromptsLogin = await visitor.locator('a[href^="/login"]').first().isVisible().catch(() => false);
+  check(`[${viewport.name}] an anonymous visitor to the public page is prompted to log in before requesting an item, not shown the request form`, applyPromptsLogin);
+  await visitorCtx.close();
+
+  // ---- 2: a second, independent browser context logs in and manages it --
+  console.log("[2] a second, independent browser context logs into the SAME account");
+  const secondCtx = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  const secondDevice = await secondCtx.newPage();
+  const beforeLoginStatus = await safeGoto(secondDevice, manageUrl);
+  check(`[${viewport.name}] before logging in, the second device cannot reach the manage page`, beforeLoginStatus.status() === 403);
+
+  await login(secondDevice, email, password);
+  const afterLoginManage = await safeGoto(secondDevice, manageUrl);
+  check(`[${viewport.name}] after logging in, the second device CAN reach the manage page it never created`, afterLoginManage.status() === 200);
+  const secondDeviceBody = await secondDevice.locator("body").innerText();
+  check(
+    `[${viewport.name}] the second device's manage page shows the same page's content`,
+    secondDeviceBody.includes(`Verify Account Page ${viewport.width}`) && secondDeviceBody.includes("Verify Lamp"),
+  );
+
+  // Can it actually WRITE, not just view? Add a second item from here.
+  await addItem(secondDevice, "Added From Second Device");
+  const itemAddedBody = await secondDevice.locator("body").innerText();
+  check(`[${viewport.name}] the second device can actually add an item (a creator-only write), not just view`, itemAddedBody.includes("Added From Second Device"));
+
+  // ---- 3: a signed-in claimant requests the item, logs out via login+next -
+  console.log("[3] a claimant applies after being guided through login, landing back on the original page");
+  const claimantCtx = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  const claimant = await claimantCtx.newPage();
+  await safeGoto(claimant, publicUrl);
+  const loginLink = await claimant.locator('li.item-card a[href^="/login"]').first().getAttribute("href");
+  check(`[${viewport.name}] the login prompt's link carries a same-site "next" back to this exact page`, loginLink && loginLink.includes("next=") && !loginLink.includes("http"));
+  const claimantEmail = `verify-claimant-${viewport.width}-${Date.now()}@example.com`;
+  await register(claimant, claimantEmail, password, { next: publicPath });
+  // Lands on the intermediate "linked" confirmation, not auto-redirected —
+  // the user clicks through themselves.
+  const onConfirmation = claimant.url().includes("/register") || (await claimant.locator(`a[href="${publicPath}"]`).count()) > 0;
+  check(`[${viewport.name}] after registering via the login gate, the user is shown a confirmation to click through, not auto-redirected with the original request replayed`, onConfirmation);
+  await claimant.locator(`a[href="${publicPath}"]`).first().click({ force: true });
+  await claimant.waitForLoadState("networkidle");
+
+  const firstItemCard = claimant.locator("li.item-card").first();
+  await firstItemCard.locator('summary:has-text("Request this")').click({ force: true });
+  await firstItemCard.locator('input[name="nickname"]').fill("Claimant");
+  const [applyResp] = await Promise.all([
+    claimant.waitForResponse((r) => r.url().includes("/apply") && r.request().method() === "POST"),
+    firstItemCard.locator('form[action*="/apply"] button[type="submit"]').click({ force: true }),
+  ]);
+  if (applyResp.status() >= 400) throw new Error(`apply failed: ${applyResp.status()}`);
+  check(`[${viewport.name}] the now-logged-in claimant's apply actually succeeds`, applyResp.status() < 400);
+
+  // ---- 4: cross-account isolation ----------------------------------------
+  console.log("[4] cross-account isolation — an unrelated account cannot manage this page or act on its applications");
+  const strangerCtx = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  const stranger = await strangerCtx.newPage();
+  const strangerEmail = `verify-stranger-${viewport.width}-${Date.now()}@example.com`;
+  await register(stranger, strangerEmail, password);
+  const strangerManageAttempt = await safeGoto(stranger, manageUrl);
+  check(`[${viewport.name}] an unrelated signed-in account cannot reach someone else's manage page`, strangerManageAttempt.status() === 403);
+
+  // ---- 5: a different device, signed into the claimant's account --------
+  console.log("[5] a different device, signed into the claimant's account, can manage the SAME application");
+  await safeGoto(owner, manageUrl);
+  await owner.waitForLoadState("networkidle");
+  const claimantRow = owner.locator('li.applicant-row:has-text("Claimant")').first();
+  const [confirmResp] = await Promise.all([
+    owner.waitForResponse((r) => r.url().includes("/confirm") && r.request().method() === "POST"),
+    claimantRow.locator('form[action*="/confirm"] button[type="submit"]').click({ force: true }),
+  ]);
+  if (confirmResp.status() >= 400) throw new Error(`confirm failed: ${confirmResp.status()}`);
+  await owner.waitForLoadState("networkidle");
+
+  const claimantSecondDeviceCtx = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  const claimantSecondDevice = await claimantSecondDeviceCtx.newPage();
+  await login(claimantSecondDevice, claimantEmail, password);
+  await safeGoto(claimantSecondDevice, publicUrl);
+  await claimantSecondDevice.waitForLoadState("networkidle");
+  const pickupShown = await waitFor(() => claimantSecondDevice.locator(".pickup-card").isVisible().catch(() => false));
+  check(`[${viewport.name}] a different device, signed into the claimant's account, sees the confirmed pickup card`, pickupShown);
+
+  // ---- 6: A logs out — old page/link/direct-request attempts all fail ---
+  console.log("[6] A logs out — the old device cookie can no longer manage the page via page, link, or direct request");
+  const sessionCookieBefore = (await ownerCtx.cookies()).find((c) => c.name === "session");
+  check(`[${viewport.name}] setup: the owner had a real session cookie before logout`, Boolean(sessionCookieBefore));
+
+  await owner.locator('form[action="/logout"] button[type="submit"]').click({ force: true });
+  await owner.waitForLoadState("networkidle");
+  const afterLogoutHeader = await owner.locator(".site-nav").innerText();
+  check(`[${viewport.name}] after logout, the header no longer shows the account — back to Log in / Register`, afterLogoutHeader.includes("Log in") && afterLogoutHeader.includes("Register"));
+
+  // Via the same tab, revisiting the manage URL directly.
+  const sameTabRetry = await safeGoto(owner, manageUrl);
+  check(`[${viewport.name}] after logout, revisiting the manage URL in the SAME tab is rejected`, sameTabRetry.status() === 403);
+
+  // Via a fresh context replaying the exact pre-logout session cookie — a
+  // "stolen cookie" / "old open tab elsewhere" scenario.
+  const replayCtx = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+  await replayCtx.addCookies([{ name: "session", value: sessionCookieBefore.value, domain: "localhost", path: "/" }]);
+  const replayPage = await replayCtx.newPage();
+  const replayManageAttempt = await safeGoto(replayPage, manageUrl);
+  check(`[${viewport.name}] the exact pre-logout session cookie, replayed after logout, can no longer reach the manage page`, replayManageAttempt.status() === 403);
+  // A direct POST write attempt with the same stale cookie must also fail.
+  const replayWrite = await replayPage.evaluate(async (url) => {
+    const res = await fetch(url, { method: "POST", redirect: "manual", body: new URLSearchParams({ reason: "stale" }) });
+    return res.status;
+  }, `${publicUrl}/items/does-not-matter/withdraw`);
+  check(`[${viewport.name}] a direct POST write with the stale cookie is rejected (not a 2xx)`, replayWrite >= 400);
+
+  await ownerCtx.close();
+  await secondCtx.close();
+  await claimantCtx.close();
+  await strangerCtx.close();
+  await claimantSecondDeviceCtx.close();
+  await replayCtx.close();
 }
 
 async function main() {
@@ -168,124 +319,10 @@ async function main() {
     server = startServer();
     await waitForServer();
     browser = await chromium.launch({ channel: "chrome" });
-    const email = `verify-${Date.now()}@example.com`;
-    const password = "a-strong-password-123";
 
-    // ---- 1: anonymous page, then register on the SAME browser claims it ---
-    console.log("\n[1] create a page anonymously, then register — the page should be claimed into the new account");
-    const ownerCtx = await browser.newContext();
-    const owner = await ownerCtx.newPage();
-    const manageUrl = await createMoveoutPage(owner, { title: "Verify Account Page", pickupLocation: "Door 1", nickname: "Owner" });
-    await addTimeslot(owner);
-    await addItem(owner, "Verify Lamp");
-    const publicUrl = manageUrl.replace("/manage", "");
-
-    await register(owner, email, password);
-    const registerBody = await owner.locator("body").innerText();
-    check("register page confirms the page was linked", registerBody.includes("Linked 1 move-out page"));
-
-    await safeGoto(owner, `${BASE_URL}/mine`);
-    const mineAfterRegister = await owner.locator("body").innerText();
-    check("owner's own /mine lists the claimed page after registering", mineAfterRegister.includes("Verify Account Page"));
-    const headerShowsEmail = await owner.locator(".account-chip").innerText().catch(() => "");
-    check("header shows the signed-in email", headerShowsEmail.includes(email));
-
-    // ---- 2: a genuinely different browser context logs in and manages it --
-    console.log("\n[2] a second, independent browser context logs into the SAME account");
-    const secondCtx = await browser.newContext();
-    const secondDevice = await secondCtx.newPage();
-    const beforeLoginStatus = await safeGoto(secondDevice, manageUrl);
-    check("before logging in, the second device cannot reach the manage page", beforeLoginStatus.status() === 403);
-
-    await login(secondDevice, email, password);
-    const afterLoginManage = await safeGoto(secondDevice, manageUrl);
-    check("after logging in, the second device CAN reach the manage page it never created", afterLoginManage.status() === 200);
-    const secondDeviceBody = await secondDevice.locator("body").innerText();
-    check("the second device's manage page shows the same page's content", secondDeviceBody.includes("Verify Account Page") && secondDeviceBody.includes("Verify Lamp"));
-
-    await safeGoto(secondDevice, `${BASE_URL}/mine`);
-    const secondMine = await secondDevice.locator("body").innerText();
-    check("the second device's own /mine also lists the same page", secondMine.includes("Verify Account Page"));
-
-    // Can it actually WRITE, not just view? Add a second item from here.
-    await safeGoto(secondDevice, manageUrl);
-    await addItem(secondDevice, "Added From Second Device");
-    const itemAddedBody = await secondDevice.locator("body").innerText();
-    check("the second device can actually add an item (a creator-only write), not just view", itemAddedBody.includes("Added From Second Device"));
-
-    // ---- 3: a third, unrelated visitor cannot see the claimant request ----
-    console.log("\n[3] cross-account isolation — an unrelated account cannot manage this page or act on its applications");
-    const claimantCtx = await browser.newContext();
-    const claimant = await claimantCtx.newPage();
-    await safeGoto(claimant, publicUrl);
-    const firstItemCard = claimant.locator("li.item-card").first();
-    await firstItemCard.locator('summary:has-text("Request this")').click({ force: true });
-    await firstItemCard.locator('input[name="nickname"]').fill("Claimant");
-    const [applyResp] = await Promise.all([
-      claimant.waitForResponse((r) => r.url().includes("/apply") && r.request().method() === "POST"),
-      firstItemCard.locator('form[action*="/apply"] button[type="submit"]').click({ force: true }),
-    ]);
-    if (applyResp.status() >= 400) throw new Error(`apply failed: ${applyResp.status()}`);
-    const claimantEmail = `verify-claimant-${Date.now()}@example.com`;
-    await register(claimant, claimantEmail, password);
-
-    const strangerCtx = await browser.newContext();
-    const stranger = await strangerCtx.newPage();
-    const strangerEmail = `verify-stranger-${Date.now()}@example.com`;
-    await register(stranger, strangerEmail, password);
-    const strangerManageAttempt = await safeGoto(stranger, manageUrl);
-    check("an unrelated signed-in account cannot reach someone else's manage page", strangerManageAttempt.status() === 403);
-
-    // ---- 4: claimant's own application is reachable from a new device -----
-    console.log("\n[4] a different device, signed into the claimant's account, can manage the SAME application");
-    await safeGoto(owner, manageUrl);
-    await owner.waitForLoadState("networkidle");
-    // Scoped to the applicant row that actually says "Claimant" — with two
-    // items on this page, an unscoped `.first()` confirm button isn't
-    // reliably the claimant's own request.
-    const claimantRow = owner.locator('li.applicant-row:has-text("Claimant")').first();
-    const [confirmResp] = await Promise.all([
-      owner.waitForResponse((r) => r.url().includes("/confirm") && r.request().method() === "POST"),
-      claimantRow.locator('form[action*="/confirm"] button[type="submit"]').click({ force: true }),
-    ]);
-    if (confirmResp.status() >= 400) throw new Error(`confirm failed: ${confirmResp.status()}`);
-    await owner.waitForLoadState("networkidle");
-
-    const claimantSecondDeviceCtx = await browser.newContext();
-    const claimantSecondDevice = await claimantSecondDeviceCtx.newPage();
-    await login(claimantSecondDevice, claimantEmail, password);
-    await safeGoto(claimantSecondDevice, publicUrl);
-    await claimantSecondDevice.waitForLoadState("networkidle");
-    const pickupShown = await waitFor(() => claimantSecondDevice.locator(".pickup-card").isVisible().catch(() => false));
-    check("a different device, signed into the claimant's account, sees the confirmed pickup card", pickupShown);
-    await claimantSecondDevice.getByRole("button", { name: "On the way", exact: true }).click({ force: true });
-    await claimantSecondDevice.waitForLoadState("networkidle");
-    const departureShown = await waitFor(() =>
-      claimantSecondDevice.locator("[data-departure-status-text]").innerText().then((t) => t.includes("On the way")).catch(() => false),
-    );
-    check("that second device can actually set departure status on a request it never personally created", departureShown);
-
-    // ---- 5: logout actually revokes, a replayed cookie can't act ----------
-    console.log("\n[5] logout revokes the session — replaying the old cookie cannot perform a write");
-    const sessionCookieBefore = (await secondCtx.cookies()).find((c) => c.name === "session");
-    check("setup: the second device had a real session cookie before logout", Boolean(sessionCookieBefore));
-
-    await secondDevice.locator('form[action="/logout"] button[type="submit"]').click({ force: true });
-    await secondDevice.waitForLoadState("networkidle");
-    const afterLogoutHeader = await secondDevice.locator(".site-nav").innerText();
-    check("after logout, the header no longer shows the account — back to Log in / Register", afterLogoutHeader.includes("Log in") && afterLogoutHeader.includes("Register"));
-
-    // Replay the pre-logout cookie value directly via a raw request in a
-    // FRESH context (so no other cookie from this browsing session is
-    // involved) — simulating a stolen cookie used after the real owner
-    // signed out.
-    const replayCtx = await browser.newContext();
-    await replayCtx.addCookies([
-      { name: "session", value: sessionCookieBefore.value, domain: "localhost", path: "/" },
-    ]);
-    const replayPage = await replayCtx.newPage();
-    const replayManageAttempt = await safeGoto(replayPage, manageUrl);
-    check("the exact pre-logout session cookie, replayed after logout, can no longer reach the manage page", replayManageAttempt.status() === 403);
+    for (const viewport of VIEWPORTS) {
+      await runAt(viewport, browser);
+    }
   } finally {
     if (browser) await browser.close().catch(() => {});
     await stopServer(server);

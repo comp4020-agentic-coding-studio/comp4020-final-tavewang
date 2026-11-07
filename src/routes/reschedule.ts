@@ -1,6 +1,6 @@
 import { Hono } from "hono";
-import { db, withTransaction, type Item, type Moveout, type Timeslot } from "../db.ts";
-import { getApplication, getItem, getMoveout, getPendingReschedule, getReschedule, isCreator } from "../ownership.ts";
+import { db, withTransaction, type Application, type Item, type Moveout, type Timeslot } from "../db.ts";
+import { getApplication, getItem, getMoveout, getPendingReschedule, getReschedule, isClaimant, isCreator, isProposer } from "../ownership.ts";
 import { notifyDevice, notifyMoveout } from "../live.ts";
 import { logEvent } from "../log.ts";
 
@@ -18,35 +18,14 @@ function applicationContext(applicationId: string): { item: Item; moveout: Moveo
 
 // A reschedule concerns exactly two parties: the move-out's creator and this
 // application's claimant. Nobody else may view, propose on, accept, decline,
-// or withdraw anything about it — enforced the same way as every other
-// creator/claimant check in this app (device id against the stored row, never
-// a client-supplied field).
-// Claimant match is also widened to "this device OR this signed-in
-// account" (`claimerAccountId`), the same way isCreator widens the
-// creator check — a different device signed into the account that sent
-// the original request is just as much "the claimant" as the original
-// device.
-function roleOf(
-  moveout: Moveout,
-  claimerDeviceId: string,
-  claimerAccountId: string | null,
-  deviceId: string,
-  accountId: string | undefined,
-): "creator" | "claimant" | null {
+// or withdraw anything about it — through the SAME shared isCreator/
+// isClaimant predicates every other route in this app uses (not a local
+// reimplementation, which is what let this file's own copy drift out of
+// sync with ownership.ts's account-replaces-device rule before).
+function roleOf(moveout: Moveout, app: Application, deviceId: string, accountId: string | undefined): "creator" | "claimant" | null {
   if (isCreator(moveout, deviceId, accountId)) return "creator";
-  if (claimerDeviceId === deviceId) return "claimant";
-  if (accountId !== undefined && claimerAccountId === accountId) return "claimant";
+  if (isClaimant(app, deviceId, accountId)) return "claimant";
   return null;
-}
-
-// Was this specific proposal made by the current requester, on any device
-// they're recognised as — their own device id, or (if signed in) the
-// account tied to the device that actually proposed it. `proposedByAccountId`
-// is read from the moveout/application context's device, resolved by the
-// caller the same way claimant identity is above.
-function isSameParty(proposedByDeviceId: string, deviceId: string, proposedByAccountId: string | undefined, accountId: string | undefined): boolean {
-  if (proposedByDeviceId === deviceId) return true;
-  return accountId !== undefined && proposedByAccountId !== undefined && proposedByAccountId === accountId;
 }
 
 function validNewTimeslot(timeslot: Timeslot | undefined, moveout: Moveout, currentTimeslotId: string, now: string): string | null {
@@ -63,7 +42,7 @@ rescheduleRoutes.post("/applications/:id/reschedule", async (c) => {
   if (!ctx) return c.notFound();
   const deviceId = c.get("deviceId");
   const app = getApplication(applicationId)!;
-  const role = roleOf(ctx.moveout, app.claimer_device_id, app.claimer_account_id, deviceId, c.get("account")?.id);
+  const role = roleOf(ctx.moveout, app, deviceId, c.get("account")?.id);
   if (!role) {
     logEvent({ event: "reschedule.propose", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId, status: 404, reasonCode: "not_party" });
     return c.notFound();
@@ -127,14 +106,14 @@ rescheduleRoutes.post("/reschedule/:id/accept", (c) => {
   if (!ctx) return c.notFound();
   const deviceId = c.get("deviceId");
   const app = getApplication(proposal.application_id)!;
-  const role = roleOf(ctx.moveout, app.claimer_device_id, app.claimer_account_id, deviceId, c.get("account")?.id);
+  const role = roleOf(ctx.moveout, app, deviceId, c.get("account")?.id);
   if (!role) {
     logEvent({ event: "reschedule.accept", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId: app.id, status: 404, reasonCode: "not_party" });
     return c.notFound();
   }
   // The proposer can't accept their own proposal — acceptance is the OTHER
   // party's act, by definition.
-  if (isSameParty(proposal.proposed_by_device_id, deviceId, proposal.proposed_by_account_id ?? undefined, c.get("account")?.id)) {
+  if (isProposer(proposal, deviceId, c.get("account")?.id)) {
     logEvent({ event: "reschedule.accept", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId: app.id, status: 403, reasonCode: "self_accept" });
     return c.text("You proposed this reschedule — the other party has to accept it.", 403);
   }
@@ -207,12 +186,12 @@ rescheduleRoutes.post("/reschedule/:id/decline", (c) => {
   if (!ctx) return c.notFound();
   const deviceId = c.get("deviceId");
   const app = getApplication(proposal.application_id)!;
-  const role = roleOf(ctx.moveout, app.claimer_device_id, app.claimer_account_id, deviceId, c.get("account")?.id);
+  const role = roleOf(ctx.moveout, app, deviceId, c.get("account")?.id);
   if (!role) {
     logEvent({ event: "reschedule.decline", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId: app.id, status: 404, reasonCode: "not_party" });
     return c.notFound();
   }
-  if (isSameParty(proposal.proposed_by_device_id, deviceId, proposal.proposed_by_account_id ?? undefined, c.get("account")?.id)) {
+  if (isProposer(proposal, deviceId, c.get("account")?.id)) {
     logEvent({ event: "reschedule.decline", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId: app.id, status: 403, reasonCode: "self_decline" });
     return c.text("You proposed this reschedule — withdraw it instead if you've changed your mind.", 403);
   }
@@ -239,7 +218,7 @@ rescheduleRoutes.post("/reschedule/:id/withdraw", (c) => {
   if (!ctx) return c.notFound();
   const deviceId = c.get("deviceId");
   const app = getApplication(proposal.application_id)!;
-  if (!isSameParty(proposal.proposed_by_device_id, deviceId, proposal.proposed_by_account_id ?? undefined, c.get("account")?.id)) {
+  if (!isProposer(proposal, deviceId, c.get("account")?.id)) {
     logEvent({ event: "reschedule.withdraw", actor: deviceId, outcome: "denied", moveoutId: ctx.moveout.id, applicationId: app.id, status: 404, reasonCode: "not_proposer" });
     return c.notFound();
   }
@@ -251,7 +230,7 @@ rescheduleRoutes.post("/reschedule/:id/withdraw", (c) => {
     logEvent({ event: "reschedule.withdraw", actor: deviceId, outcome: "conflict", moveoutId: ctx.moveout.id, applicationId: app.id, status: 409, reasonCode: "already_resolved" });
     return c.text("This proposal was already resolved.", 409);
   }
-  const role = roleOf(ctx.moveout, app.claimer_device_id, app.claimer_account_id, deviceId, c.get("account")?.id);
+  const role = roleOf(ctx.moveout, app, deviceId, c.get("account")?.id);
   logEvent({ event: "reschedule.withdraw", actor: deviceId, outcome: "success", moveoutId: ctx.moveout.id, itemId: ctx.item.id, applicationId: app.id, affectedDevice: app.claimer_device_id });
   notifyMoveout(ctx.moveout.id);
   notifyDevice(app.claimer_device_id);

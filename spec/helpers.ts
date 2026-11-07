@@ -6,7 +6,7 @@ export interface Client {
   post(path: string, data?: Record<string, string> | FormData): Promise<Response>;
 }
 
-export function makeClient(baseUrl: string): Client {
+function makeRawClient(baseUrl: string): Client {
   // A per-cookie-name map, not one joined string — a response can set
   // several cookies at once (e.g. src/routes/auth.ts's register/login set
   // BOTH `device` and `session` in the same response), and
@@ -42,6 +42,39 @@ export function makeClient(baseUrl: string): Client {
     get: (path) => request("GET", path),
     post: (path, data) => request("POST", path, data),
   };
+}
+
+let uniqueCounter = 0;
+function uniqueTestEmail(label = "test"): string {
+  uniqueCounter += 1;
+  return `${label}-${Date.now()}-${process.pid}-${uniqueCounter}@example.test`;
+}
+
+// A brand-new device with no cookies at all, never signed in — for the
+// specific tests that are actually about anonymous behaviour (pre-sign-in
+// Browse, the login/register gate itself, claim-on-register). Every OTHER
+// helper in this file assumes a signed-in `Client` by default, since this
+// round's brief requires an account to create a page or send a request —
+// matching what most of the test suite is actually testing (the business
+// rules), not the login gate itself.
+export function makeAnonymousClient(baseUrl: string): Client {
+  return makeRawClient(baseUrl);
+}
+
+// The default test "browser": a fresh device, immediately registered with
+// its own unique throwaway account. Nearly everything in this suite needs a
+// signed-in actor to do anything at all (create a page, apply) — centralising
+// that here, rather than every test file calling register() first, is what
+// kept every pre-existing call site in this suite (`makeClient(baseUrl)`)
+// working unchanged once sign-in became mandatory, instead of needing every
+// single test rewritten to add its own registration boilerplate.
+export async function makeClient(baseUrl: string, opts: { email?: string; password?: string } = {}): Promise<Client> {
+  const client = makeRawClient(baseUrl);
+  const email = opts.email ?? uniqueTestEmail();
+  const password = opts.password ?? "a-test-password-123";
+  const res = await client.post("/register", { email, password });
+  if (res.status !== 200) throw new Error(`test setup: register failed for ${email}: ${res.status} ${await res.text()}`);
+  return client;
 }
 
 // Redirects come back as opaque "manual" responses (status 302) rather than
@@ -154,8 +187,8 @@ export async function setUpConfirmedBooking(
   slot2Id: string;
   applicationId: string;
 }> {
-  const owner = makeClient(baseUrl);
-  const claimant = makeClient(baseUrl);
+  const owner = await makeClient(baseUrl);
+  const claimant = await makeClient(baseUrl);
   const moveout = await createMoveout(owner, {
     title: opts.title,
     deadline: futureLocalDateTime(72),

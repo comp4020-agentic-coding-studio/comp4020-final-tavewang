@@ -27,57 +27,91 @@ not a quiet exception here.
   from two different devices is two different people — identity is always
   `(entity, device_id)`, never nickname.
 
-## Accounts (optional, layered on top of the device cookie)
+## Accounts are required to publish or apply; device cookie is secondary
 
-- An account (`src/auth.ts`, `src/routes/auth.ts`) is email + password,
-  entirely optional — a visitor who never registers behaves exactly as
-  before accounts existed. Accounts exist to answer one question the device
-  cookie alone can't: "how do I reach my pages/requests from a different
-  browser or device?" They are never a replacement for the device-cookie
-  identity, only an additional way to match it.
+- An account (`src/auth.ts`, `src/routes/auth.ts`) is email + password.
+  Creating a move-out page (`POST /moveouts`) and sending a request
+  (`POST /m/:id/apply`) both require being signed in — enforced
+  server-side, not just by hiding the buttons in a logged-out view. An
+  anonymous visitor hitting either route is redirected to `/login` with a
+  `next` back to a safe, same-site page (`src/session.ts#safeNextPath` —
+  never an external URL), never served a silent 403 with no explanation.
+  Browsing, searching, filtering, and viewing any page reachable by its own
+  link remain fully anonymous — the gate is specifically on writes that
+  create or claim data.
 - `moveouts.creator_account_id` and `applications.claimer_account_id` are
-  **nullable, additive** columns — NULL means "nobody's claimed this into an
-  account," never a gap to backfill or guess. Both are set only by
-  `src/auth.ts#claimAnonymousDataForAccount` (on register/login, scoped to
-  rows the signing-in device already owns) or at creation/apply time while
-  already signed in — never by anything a client sends directly.
-- Every ownership check in this app is widened the same way:
-  `src/ownership.ts#isCreator`/`#isClaimant` match on **device id OR signed-
-  in account id** — never device id alone once accounts exist. A route that
-  adds a new creator-only or claimant-only action must call these, not write
-  its own `=== deviceId` check, or it'll silently fail to recognise a
-  different device signed into the right account.
-- **This widening has to reach read paths too, not just write guards** — a
-  real bug found by browser-level testing: `GET /m/:id`'s "Your requests"
-  query was hand-written SQL that only matched `claimer_device_id`, so a
-  different device signed into the claimant's account could already
-  successfully POST a write (the guard was correctly widened) but could
-  never find the application id to act on through the rendered page, since
-  the list that would show it stayed device-scoped. Any new query that lists
-  "my own" pages or applications must OR in the account id the same way
-  `src/routes/moveout.ts`'s `myApps` query and
-  `src/ownership.ts#listMoveoutsCreatedByAccount` /
-  `#listApplicationsWithContextForAccount` do — a route or view that reads
-  without this half of the check will disagree with its own write-side
-  guard about who "the claimant" or "the creator" is.
+  **nullable, additive** columns — NULL means "this predates the account
+  requirement, or is otherwise not yet claimed," never a gap to backfill or
+  guess. Both are set at creation/apply time (always, now that signing in is
+  required to reach those routes) or retroactively by
+  `src/auth.ts#claimAnonymousDataForAccount` on register/login, for rows
+  that predate this requirement and are still device-only.
+- **The ownership rule is account-replaces-device, not account-widens-
+  device.** `src/ownership.ts#matchesOwner` (used by `isCreator`,
+  `isClaimant`, `isProposer`) is the one place this is decided: once an
+  entity's `*_account_id` is non-null, **only** a live session signed into
+  that exact account counts — the device id that originally created it is
+  no longer a valid credential for it, even from the literal original
+  browser. Until an entity is claimed (`*_account_id IS NULL`), identity
+  stays device-only, exactly as the app worked before accounts existed. A
+  route that adds a new creator-only or claimant-only action must call
+  these shared functions, not write its own `=== deviceId` or
+  `deviceId || accountId` check.
+- **This was a real vulnerability, found and fixed this round.** The
+  previous rule was an OR (device match OR account match, device checked
+  first) — so signing out (which only deletes the session row) never
+  revoked the separate, independent `device` cookie, and the original
+  creator, or anyone who'd captured that cookie, could keep managing data
+  they'd already signed into an account, indefinitely. See
+  `spec/permission-regression.test.ts` for the regression coverage (all ten
+  scenarios failed under the old OR logic, confirmed before the fix) and
+  `scripts/browser-verify-accounts.mjs` for the real-browser acceptance run.
+  If a future change ever needs device id to keep mattering after an entity
+  is claimed, that is a deliberate widening of the attack surface and needs
+  this section rewritten first, not a quiet exception.
+- **This rule has to reach read paths too, not just write guards.** Any
+  query that lists "my own" pages or applications must apply the identical
+  rule, not a separate device-only or OR-based comparison —
+  `src/ownership.ts#ownerMatchSql` exists precisely so a raw SQL query (like
+  `src/routes/moveout.ts`'s `myApps`) can mirror `matchesOwner`'s logic
+  exactly instead of drifting from it. A route or view that reads with a
+  different rule than its own write-side guard will disagree about who "the
+  claimant" or "the creator" is — the exact bug class a previous round's
+  fix (now superseded by the account-replaces-device rule above) also had
+  to close for the OR-based version of this logic.
 - `claimAnonymousDataForAccount` only ever claims a row whose
   `*_account_id` is currently NULL or already equal to the account being
   signed into — never a row another account has already claimed. Logging
   into account B on a device that previously claimed data for account A
-  must not reassign A's data to B.
+  must not reassign A's data to B. The whole claim pass runs inside one
+  transaction (`src/db.ts#withTransaction`) so a crash between the
+  moveouts/applications updates can't leave one table claimed and the other
+  not, and is safe to run repeatedly (logging into the same account twice
+  is a no-op, not an error).
+- `src/auth.ts#hasUnclaimedAnonymousData` may tell a not-yet-signed-in
+  visitor that *this device* has old, not-yet-claimed data (purely to set
+  expectations before they register/log in) — it must never itself grant
+  access to anything, bound or unbound; `isCreator`/`isClaimant` are the only
+  code that decides access.
 - A session (`account_sessions`) is a server-side row, not a signed token —
   the `session` cookie carries only this row's unguessable id. **Sign-out
   deletes the row.** This is what makes logout an actual revocation rather
   than asking the browser nicely to forget a cookie: the exact same cookie
   value, replayed after logout, must resolve to "not signed in," indistinguishable
   from a session id that never existed. Never implement logout by only
-  clearing the cookie client-side.
+  clearing the cookie client-side. `src/session.ts#deviceMiddleware` resolves
+  the session against the live `account_sessions` row on every single
+  request (no caching), so revocation is immediate on the very next request
+  — including one already in flight from a stale open tab or SSE reconnect.
 - Passwords are hashed with `node:crypto`'s `scrypt` (`src/auth.ts#hashPassword`),
   salted per-account, compared with `timingSafeEqual` — never stored
   plaintext or reversibly encoded, never compared with `===`.
 - Login's rejection message is identical whether the email doesn't exist or
   the password is wrong (`src/auth.ts#verifyLogin` returns `undefined` for
   both) — never confirm which emails have an account.
+- All HTML routes serve `Cache-Control: private, no-store` (`src/server.ts`)
+  — a shared or public computer must never serve a stale authenticated page
+  back to the next person who sits down at it.
 
 ## Public browse pool (final iteration)
 

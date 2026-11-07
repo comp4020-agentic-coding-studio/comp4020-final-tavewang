@@ -1,7 +1,7 @@
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { db, isItemCategory, type Application, type Item, type Timeslot } from "../db.ts";
-import { getMoveout, isCreator, listItems, listTimeslots, pendingRescheduleView } from "../ownership.ts";
+import { getMoveout, isCreator, listItems, listTimeslots, ownerMatchSql, pendingRescheduleView } from "../ownership.ts";
 import { newId } from "../ids.ts";
 import { zonedDateTimeToUtc } from "../tz.ts";
 import { saveUploadedPhoto, isUploadRejection } from "../uploads.ts";
@@ -30,21 +30,21 @@ moveoutRoutes.get("/m/:id", (c) => {
   );
 
   const accountId = c.get("account")?.id ?? null;
-  // Widened the same way every write-side claimant check is (isClaimant,
-  // src/ownership.ts): this device's own applications, OR — when signed
-  // in — every application tied to this account regardless of which device
-  // actually sent it. Without the account half of this OR, a different
-  // device signed into the account could still POST a write (the route
-  // guards already check isClaimant) but would never see "Your requests"
-  // render it, since the write-permission check and this read query would
-  // silently disagree about who the claimant is.
+  // Mirrors isClaimant's own rule exactly (src/ownership.ts#matchesOwner):
+  // an unbound application is found by device id; a bound one is ONLY found
+  // through the matching account, never by device id even if it happens to
+  // match. This has to track isClaimant's write-side logic precisely — the
+  // two disagreeing is the exact bug class CLAUDE.md documents (a route's
+  // write guard and its own read query silently diverging on who "the
+  // claimant" is).
+  const claimerMatch = ownerMatchSql("a", "claimer");
   const myApps = db
     .prepare(
       `SELECT a.* FROM applications a JOIN items i ON i.id = a.item_id
-       WHERE i.moveout_id = ? AND (a.claimer_device_id = ? OR (? IS NOT NULL AND a.claimer_account_id = ?))
+       WHERE i.moveout_id = ? AND ${claimerMatch.sql}
        ORDER BY a.created_at DESC`,
     )
-    .all(moveout.id, deviceId, accountId, accountId) as unknown as Application[];
+    .all(moveout.id, ...claimerMatch.bind(deviceId, accountId)) as unknown as Application[];
   // Resolved against the FULL item list, not the public (withdrawn-excluded)
   // one — a claimant's own application history (including "cancelled
   // because the item was withdrawn") should still show up for them even
@@ -269,7 +269,17 @@ moveoutRoutes.post("/m/:id/apply", async (c) => {
   const moveout = getMoveout(c.req.param("id"));
   if (!moveout) return c.notFound();
   const deviceId = c.get("deviceId");
-  if (isCreator(moveout, deviceId, c.get("account")?.id)) {
+  const account = c.get("account");
+  // Sending a request requires an account (this round's brief) — enforced
+  // server-side, same reasoning as POST /moveouts above. Following the
+  // same "redirect to login with next, never 403" pattern: the data-ajax
+  // client (src/public/live.js) follows this redirect and lands the
+  // browser on the login page, rather than treating it as a hard error.
+  if (!account) {
+    logEvent({ event: "application.apply", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 401, reasonCode: "not_signed_in" });
+    return c.redirect(`/login?next=${encodeURIComponent(`/m/${moveout.id}`)}&reason=signin_required`);
+  }
+  if (isCreator(moveout, deviceId, account.id)) {
     logEvent({ event: "application.apply", actor: deviceId, outcome: "denied", moveoutId: moveout.id, status: 400, reasonCode: "self_request" });
     return c.text("You can't request your own item.", 400);
   }
@@ -303,12 +313,11 @@ moveoutRoutes.post("/m/:id/apply", async (c) => {
   }
 
   const applicationId = newId();
-  const accountId = c.get("account")?.id ?? null;
   try {
     db.prepare(
       `INSERT INTO applications (id, item_id, timeslot_id, claimer_device_id, claimer_nickname, note, claimer_account_id)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(applicationId, item.id, timeslot.id, deviceId, nickname, note, accountId);
+    ).run(applicationId, item.id, timeslot.id, deviceId, nickname, note, account.id);
   } catch (err) {
     // Only the partial unique index (applications_one_active_per_device)
     // means "an active request from this device already exists for this

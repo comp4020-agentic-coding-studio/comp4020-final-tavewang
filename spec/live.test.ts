@@ -7,6 +7,7 @@ import {
   createMoveout,
   firstTimeslotId,
   futureLocalDateTime,
+  makeAnonymousClient,
   makeClient,
 } from "./helpers.ts";
 
@@ -44,7 +45,7 @@ async function waitForSSE(res: Response, name: string, timeoutMs: number): Promi
 }
 
 it("the events stream answers for an existing moveout, and 404s for one that doesn't exist", async () => {
-  const owner = makeClient(baseUrl);
+  const owner = await makeClient(baseUrl);
   const moveout = await createMoveout(owner, { title: "SSE smoke test", deadline: futureLocalDateTime(72), nickname: "Owner" });
 
   const res = await fetch(new URL(`/m/${moveout.moveoutId}/events`, baseUrl));
@@ -55,11 +56,11 @@ it("the events stream answers for an existing moveout, and 404s for one that doe
 });
 
 it("a new request pushes a sync event to anyone watching the moveout, within about a second", async () => {
-  const owner = makeClient(baseUrl);
+  const owner = await makeClient(baseUrl);
   const moveout = await createMoveout(owner, { title: "Live apply test", deadline: futureLocalDateTime(72), nickname: "Owner" });
   await addTimeslot(owner, moveout.moveoutId, futureLocalDateTime(2), futureLocalDateTime(3));
   const itemId = await addItem(owner, moveout.moveoutId, { name: "Kettle" });
-  const visitor = makeClient(baseUrl);
+  const visitor = await makeClient(baseUrl);
   const publicPage = await (await visitor.get(moveout.publicUrl)).text();
   const timeslotId = firstTimeslotId(publicPage, itemId);
 
@@ -70,7 +71,7 @@ it("a new request pushes a sync event to anyone watching the moveout, within abo
   const sse = await fetch(new URL(`/m/${moveout.moveoutId}/events`, baseUrl));
   const waiting = waitForSSE(sse, "sync", 1500);
 
-  const bob = makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
   const applyRes = await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob" });
   expect(applyRes.status).toBe(302);
 
@@ -80,24 +81,38 @@ it("a new request pushes a sync event to anyone watching the moveout, within abo
 });
 
 it("confirming notifies the claimant's own device-scoped stream (home page), not just the moveout page", async () => {
-  const owner = makeClient(baseUrl);
+  const owner = await makeClient(baseUrl);
   const moveout = await createMoveout(owner, { title: "Live confirm test", deadline: futureLocalDateTime(72), nickname: "Owner" });
   await addTimeslot(owner, moveout.moveoutId, futureLocalDateTime(2), futureLocalDateTime(3));
   const itemId = await addItem(owner, moveout.moveoutId, { name: "Rug" });
-  const visitorPage = await (await makeClient(baseUrl).get(moveout.publicUrl)).text();
+  const visitorPage = await (await (await makeClient(baseUrl)).get(moveout.publicUrl)).text();
   const timeslotId = firstTimeslotId(visitorPage, itemId);
 
   // `makeClient`'s Client interface doesn't expose its cookie jar (by
   // design — spec/helpers.ts keeps it private), and a raw SSE fetch needs
-  // the Cookie header directly, so Bob is driven by hand here instead.
-  const bobApply = await fetch(new URL(`/m/${moveout.moveoutId}/apply`, baseUrl), {
+  // the Cookie header directly, so Bob is driven by hand here instead —
+  // including registering first, since sending a request now requires an
+  // account (both the `device` and `session` cookies from that response
+  // have to be replayed below, not just `device`).
+  const bobEmail = `live-test-bob-${Date.now()}@example.test`;
+  const bobRegister = await fetch(new URL("/register", baseUrl), {
     method: "POST",
     redirect: "manual",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ email: bobEmail, password: "a-test-password-123" }).toString(),
+  });
+  const bobCookie = bobRegister.headers
+    .getSetCookie()
+    .map((c) => c.split(";")[0])
+    .join("; ");
+
+  const bobApply = await fetch(new URL(`/m/${moveout.moveoutId}/apply`, baseUrl), {
+    method: "POST",
+    redirect: "manual",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: bobCookie },
     body: new URLSearchParams({ itemId, timeslotId, nickname: "Bob" }).toString(),
   });
   expect(bobApply.status).toBe(302);
-  const bobCookie = (bobApply.headers.get("set-cookie") ?? "").split(";")[0];
 
   // Bob's own home page (GET /events, device-scoped — not /m/:id/events)
   // should hear about his application being confirmed, with no awareness

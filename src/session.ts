@@ -73,3 +73,15 @@ export function clearSessionCookie(c: Context): void {
 export function getSessionCookie(c: Context): string | undefined {
   return getCookie(c, SESSION_COOKIE_NAME);
 }
+
+// A safe "come back here after logging in" path: only ever a path on THIS
+// app (starting with exactly one `/`, never `//` which some browsers treat
+// as protocol-relative to an attacker's own host, and never an absolute
+// URL) — an open-redirect guard. A path that fails this check is dropped in
+// favour of a neutral default, never passed through to the browser.
+export function safeNextPath(raw: string | undefined, fallback = "/mine"): string {
+  if (!raw) return fallback;
+  if (!raw.startsWith("/") || raw.startsWith("//")) return fallback;
+  if (raw.includes("\\")) return fallback; // some browsers also normalise backslashes into a host separator
+  return raw;
+}

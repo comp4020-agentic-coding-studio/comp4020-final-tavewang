@@ -74,9 +74,22 @@ function myRequestCard(
   `;
 }
 
-function applyForm(item: Item, moveoutId: string, validSlots: Timeslot[], timezone: string) {
+function applyForm(item: Item, moveoutId: string, validSlots: Timeslot[], timezone: string, signedIn: boolean) {
   if (validSlots.length === 0) {
     return html`<p class="muted">No pickup times are available yet — check back later.</p>`;
+  }
+  if (!signedIn) {
+    // Server-side, POST /m/:id/apply rejects this the same way regardless
+    // (src/routes/moveout.ts) — this is just an honest explanation shown
+    // before someone fills out a form that would otherwise 302 them away
+    // mid-submit.
+    const next = encodeURIComponent(`/m/${moveoutId}`);
+    return html`
+      <p class="muted">
+        <a href="/login?next=${next}">Log in</a> or <a href="/register?next=${next}">register</a> to
+        request this.
+      </p>
+    `;
   }
   return html`
     <details class="edit-details">
@@ -103,7 +116,7 @@ function applyForm(item: Item, moveoutId: string, validSlots: Timeslot[], timezo
   `;
 }
 
-function itemCard(item: Item, moveoutId: string, validSlots: Timeslot[], timezone: string, alreadyRequested: boolean) {
+function itemCard(item: Item, moveoutId: string, validSlots: Timeslot[], timezone: string, alreadyRequested: boolean, signedIn: boolean) {
   const tone = item.status === "open" ? "pending" : item.status === "reserved" ? "active" : "done";
   return html`
     <li id="item-${item.id}" class="item-card tone-${tone}" data-item-id="${item.id}" data-item-status="${item.status}">
@@ -119,7 +132,7 @@ function itemCard(item: Item, moveoutId: string, validSlots: Timeslot[], timezon
         ${item.status === "open"
           ? alreadyRequested
             ? html`<p class="muted">You've already requested this — see "Your requests" above.</p>`
-            : applyForm(item, moveoutId, validSlots, timezone)
+            : applyForm(item, moveoutId, validSlots, timezone, signedIn)
           : ""}
       </div>
     </li>
@@ -168,7 +181,7 @@ export async function moveoutPublicView(
       <ul class="item-list" data-live-list="public-items">
         ${items.length === 0
           ? emptyPlaceholder("Nothing posted yet — check back later.")
-          : items.map((item) => itemCard(item, moveout.id, validSlots, moveout.timezone, requestedItemIds.has(item.id)))}
+          : items.map((item) => itemCard(item, moveout.id, validSlots, moveout.timezone, requestedItemIds.has(item.id), Boolean(account)))}
       </ul>
     </section>
 

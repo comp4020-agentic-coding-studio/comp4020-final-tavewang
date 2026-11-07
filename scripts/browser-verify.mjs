@@ -149,6 +149,21 @@ async function main() {
     const moverPage = await mover.newPage();
     const bobPage = await bob.newPage();
 
+    console.log("\n[setup] mover and bob register — this round's brief requires an account to publish or apply");
+    const moverEmail = `verify-mover-${Date.now()}@example.com`;
+    const bobEmail = `verify-bob-${Date.now()}@example.com`;
+    const password = "a-strong-password-123";
+    await moverPage.goto(`${BASE_URL}/register`);
+    await moverPage.fill("#email", moverEmail);
+    await moverPage.fill("#password", password);
+    await moverPage.locator('form[action="/register"] button[type="submit"]').click();
+    await moverPage.waitForLoadState("domcontentloaded");
+    await bobPage.goto(`${BASE_URL}/register`);
+    await bobPage.fill("#email", bobEmail);
+    await bobPage.fill("#password", password);
+    await bobPage.locator('form[action="/register"] button[type="submit"]').click();
+    await bobPage.waitForLoadState("domcontentloaded");
+
     console.log("\n[setup] mover creates a move-out page with two items and a timeslot");
     // Crit 11: "/" became the public Browse pool; the create-page form moved
     // to "/mine" ("My MoveOut").
@@ -159,7 +174,7 @@ async function main() {
     await moverPage.fill("#deadline", futureLocalDateTime(72));
     await moverPage.fill("#timezone", TIMEZONE);
     await moverPage.fill("#nickname", "Mover");
-    await moverPage.click('button[type="submit"]');
+    await moverPage.click('form[action="/moveouts"] button[type="submit"]');
     await moverPage.waitForURL(/\/manage$/);
     const manageUrl = moverPage.url();
     const moveoutId = manageUrl.match(/\/m\/([^/]+)\/manage/)[1];
@@ -372,6 +387,12 @@ async function main() {
     // ---- 4: confirmed status + pickup address land even while protected ----
     console.log("\n[test 4] David opens 'Change pickup time' on his pending request; mover confirms it while that's open");
     const davidPage = await (await browser.newContext()).newPage();
+    const davidEmail = `verify-david-${Date.now()}@example.com`;
+    await davidPage.goto(`${BASE_URL}/register`);
+    await davidPage.fill("#email", davidEmail);
+    await davidPage.fill("#password", password);
+    await davidPage.locator('form[action="/register"] button[type="submit"]').click();
+    await davidPage.waitForLoadState("domcontentloaded");
     await davidPage.goto(publicUrl);
     const davidCard = davidPage.locator('li.item-card:has-text("Desk Lamp")');
     // Desk Lamp is already reserved for Bob by this point, so this part
@@ -413,6 +434,12 @@ async function main() {
     const emmaCtx = await browser.newContext();
     const emmaHome = await emmaCtx.newPage();
     const emmaOther = await emmaCtx.newPage();
+    const emmaEmail = `verify-emma-${Date.now()}@example.com`;
+    await emmaHome.goto(`${BASE_URL}/register`);
+    await emmaHome.fill("#email", emmaEmail);
+    await emmaHome.fill("#password", password);
+    await emmaHome.locator('form[action="/register"] button[type="submit"]').click();
+    await emmaHome.waitForLoadState("domcontentloaded");
     await emmaHome.goto(`${BASE_URL}/mine`);
     const noRequestsSectionHiddenInitially = await emmaHome
       .locator('section[data-live-section="home-requests"]')
@@ -454,6 +481,12 @@ async function main() {
     console.log("\n[test 6] a stale confirm (already-cancelled application) is rejected by the SERVER, not just the UI");
     const freshCtx = await browser.newContext();
     const frank = await freshCtx.newPage();
+    const frankEmail = `verify-frank-${Date.now()}@example.com`;
+    await frank.goto(`${BASE_URL}/register`);
+    await frank.fill("#email", frankEmail);
+    await frank.fill("#password", password);
+    await frank.locator('form[action="/register"] button[type="submit"]').click();
+    await frank.waitForLoadState("domcontentloaded");
     await frank.goto(publicUrl);
     await moverPage.goto(manageUrl);
     await moverPage.fill("#itemName", "Toaster");

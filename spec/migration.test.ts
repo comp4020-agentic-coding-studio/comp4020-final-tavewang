@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { makeClient } from "./helpers.ts";
+import { makeAnonymousClient } from "./helpers.ts";
 
 const PORT = 8139;
 const baseUrl = `http://localhost:${PORT}`;
@@ -94,7 +94,7 @@ afterAll(async () => {
 
 it("a pre-Crit-11 move-out page migrates to unlisted, not public, and keeps its content", async () => {
   // Reachable by its old URL, unaffected by never having had visibility set.
-  const visitor = makeClient(baseUrl);
+  const visitor = makeAnonymousClient(baseUrl);
   const page = await (await visitor.get("/m/legacy-moveout")).text();
   expect(page).toContain("Pre-existing Legacy Lamp");
 
@@ -105,7 +105,7 @@ it("a pre-Crit-11 move-out page migrates to unlisted, not public, and keeps its 
 });
 
 it("a pre-Crit-11 item migrates to the 'Other' category rather than a guessed one", async () => {
-  const owner = makeClient(baseUrl);
+  const owner = makeAnonymousClient(baseUrl);
   const managePage = await (await owner.get("/m/legacy-moveout/manage")).text();
   // This client isn't the recorded creator device, so it gets the
   // not-found/403 view rather than manage — read the category from the

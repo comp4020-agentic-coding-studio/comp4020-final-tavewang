@@ -69,8 +69,8 @@ afterAll(async () => {
 
 it("two independent devices produce different, stable actor ids", async () => {
   lines = [];
-  const alice = makeClient(baseUrl);
-  const bob = makeClient(baseUrl);
+  const alice = await makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
 
   await createMoveout(alice, { title: "Actor identity test", deadline: futureLocalDateTime(72), nickname: "Alice" });
   await createMoveout(bob, { title: "Actor identity test 2", deadline: futureLocalDateTime(72), nickname: "Bob" });
@@ -89,15 +89,15 @@ it("two independent devices produce different, stable actor ids", async () => {
 
 it("a successful action logs success with the right resource correlation", async () => {
   lines = [];
-  const owner = makeClient(baseUrl);
+  const owner = await makeClient(baseUrl);
   const moveout = await createMoveout(owner, { title: "Correlation test", deadline: futureLocalDateTime(72), nickname: "Owner" });
   await addTimeslot(owner, moveout.moveoutId, futureLocalDateTime(2), futureLocalDateTime(3));
   const itemId = await addItem(owner, moveout.moveoutId, { name: "Chair" });
 
-  const visitor = makeClient(baseUrl);
+  const visitor = await makeClient(baseUrl);
   const publicPage = await (await visitor.get(moveout.publicUrl)).text();
   const timeslotId = firstTimeslotId(publicPage, itemId);
-  const bob = makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
   await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob" });
 
   const managePage = await (await owner.get(moveout.manageUrl)).text();
@@ -119,22 +119,22 @@ it("a successful action logs success with the right resource correlation", async
 
 it("a denied/conflicting action never logs as success, and a real server error stays distinguishable from a business conflict", async () => {
   lines = [];
-  const owner = makeClient(baseUrl);
+  const owner = await makeClient(baseUrl);
   const moveout = await createMoveout(owner, { title: "Denial test", deadline: futureLocalDateTime(72), nickname: "Owner" });
   await addTimeslot(owner, moveout.moveoutId, futureLocalDateTime(2), futureLocalDateTime(3));
   const itemId = await addItem(owner, moveout.moveoutId, { name: "Lamp" });
 
-  const visitor = makeClient(baseUrl);
+  const visitor = await makeClient(baseUrl);
   const publicPage = await (await visitor.get(moveout.publicUrl)).text();
   const timeslotId = firstTimeslotId(publicPage, itemId);
-  const bob = makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
   await apply(bob, moveout.moveoutId, { itemId, timeslotId, nickname: "Bob" });
 
   const managePage = await (await owner.get(moveout.manageUrl)).text();
   const appId = applicationIdFor(managePage, "Bob");
 
   // A stranger (neither creator nor claimant) tries to cancel it.
-  const stranger = makeClient(baseUrl);
+  const stranger = await makeClient(baseUrl);
   const deniedRes = await stranger.post(`/applications/${appId}/cancel`);
   expect(deniedRes.status).toBe(404);
 
@@ -151,7 +151,7 @@ it("a denied/conflicting action never logs as success, and a real server error s
 
 it("logged lines never contain the device cookie, pickup address, nickname, or note text", async () => {
   lines = [];
-  const owner = makeClient(baseUrl);
+  const owner = await makeClient(baseUrl);
   const moveout = await createMoveout(owner, {
     title: "Privacy test",
     pickupLocation: "Super Secret Address 123",
@@ -161,10 +161,10 @@ it("logged lines never contain the device cookie, pickup address, nickname, or n
   await addTimeslot(owner, moveout.moveoutId, futureLocalDateTime(2), futureLocalDateTime(3));
   const itemId = await addItem(owner, moveout.moveoutId, { name: "Sofa" });
 
-  const visitor = makeClient(baseUrl);
+  const visitor = await makeClient(baseUrl);
   const publicPage = await (await visitor.get(moveout.publicUrl)).text();
   const timeslotId = firstTimeslotId(publicPage, itemId);
-  const bob = makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
   const bobCookie = (await bob.get(moveout.publicUrl)).headers.get("set-cookie");
   await apply(bob, moveout.moveoutId, {
     itemId,

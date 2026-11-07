@@ -118,6 +118,20 @@ async function waitFor(predicate, { timeout = 5000, interval = 50 } = {}) {
 
 // --- Shared setup helpers, used by every scenario below -------------------
 
+let registerCounter = 0;
+// This round's brief requires an account to create a page or send a
+// request — every owner/claimant page below must register before touching
+// /mine or /m/:id/apply.
+async function register(page) {
+  registerCounter += 1;
+  const email = `verify-pickup-${Date.now()}-${registerCounter}@example.com`;
+  await page.goto(`${BASE_URL}/register`);
+  await page.fill("#email", email);
+  await page.fill("#password", "a-strong-password-123");
+  await page.locator('form[action="/register"] button[type="submit"]').click({ force: true });
+  await page.waitForLoadState("domcontentloaded");
+}
+
 async function createMoveoutPage(page, { title, pickupLocation, nickname }) {
   await page.goto(`${BASE_URL}/mine`);
   await page.fill("#title", title);
@@ -193,6 +207,8 @@ async function main() {
       const claimantCtx = await browser.newContext();
       const owner = await ownerCtx.newPage();
       const claimant = await claimantCtx.newPage();
+      await register(owner);
+      await register(claimant);
 
       const manageUrl = await createMoveoutPage(owner, { title: "Scenario1", pickupLocation: "Door 1", nickname: "Owner" });
       await addTimeslot(owner, 2, 3);
@@ -282,6 +298,8 @@ async function main() {
       const claimantCtx = await browser.newContext();
       const owner = await ownerCtx.newPage();
       const claimant = await claimantCtx.newPage();
+      await register(owner);
+      await register(claimant);
 
       const manageUrl = await createMoveoutPage(owner, { title: "Scenario2", pickupLocation: "Door 2", nickname: "Owner" });
       await addTimeslot(owner, 2, 3);
@@ -330,6 +348,8 @@ async function main() {
       const claimantCtx = await browser.newContext();
       const owner = await ownerCtx.newPage();
       const claimant = await claimantCtx.newPage();
+      await register(owner);
+      await register(claimant);
 
       const manageUrl = await createMoveoutPage(owner, { title: "Scenario3", pickupLocation: "Door 3", nickname: "Owner" });
       await addTimeslot(owner, 2, 3); // the ONLY timeslot this page will ever have

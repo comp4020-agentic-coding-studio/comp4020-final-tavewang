@@ -4,27 +4,81 @@ export function getMoveout(id: string): Moveout | undefined {
   return db.prepare("SELECT * FROM moveouts WHERE id = ?").get(id) as Moveout | undefined;
 }
 
-// Matches if either the requester's device created the page (the original,
-// account-free rule) OR the requester is signed into the account that owns
-// it (`accountId`, from `c.get("account")?.id` — undefined for an anonymous
-// visitor, which never matches a non-null `creator_account_id`). This is
-// what lets a different device, once signed into the same account, manage a
-// page it didn't itself create — CLAUDE.md's device-identity rule still
-// holds for the anonymous case; accounts only ever widen this check, never
-// replace or weaken it.
-export function isCreator(moveout: Moveout, deviceId: string, accountId?: string): boolean {
-  if (moveout.creator_device_id === deviceId) return true;
-  return accountId !== undefined && moveout.creator_account_id === accountId;
+// The ownership rule, stated once and shared by every *_account_id /
+// *_device_id pair in this app (moveouts.creator_*, applications.claimer_*,
+// reschedule_proposals.proposed_by_*):
+//
+//   - Once an entity is bound to an account (`entityAccountId !== null`),
+//     identity is ACCOUNT-ONLY. The device id that originally created it is
+//     no longer a valid credential for it, even from the literal original
+//     browser — only a live session signed into that exact account counts.
+//   - Until it's bound (`entityAccountId === null`), identity is still
+//     device-only, exactly as the app worked before accounts existed. This
+//     is what preserves legacy-data recognition and lets an unclaimed page
+//     be found and claimed at all.
+//
+// This used to be an OR (device match alone was always sufficient, with
+// account as an extra alternative) — a real vulnerability: signing out
+// (deleting the session row) never revoked the separate, independent
+// `device` cookie, so anyone who kept that cookie — including the original
+// creator after logging out, or anyone who copied it — could still pass
+// `creator_device_id === deviceId` and manage data that had since been
+// claimed into an account. Binding an entity to an account must REPLACE its
+// device-based authorization, not sit alongside it.
+function matchesOwner(entityAccountId: string | null, entityDeviceId: string, deviceId: string, accountId: string | undefined): boolean {
+  if (entityAccountId !== null) return accountId !== undefined && accountId === entityAccountId;
+  return entityDeviceId === deviceId;
 }
 
-// Same device-OR-account widening as isCreator, for "is this requester the
+export function isCreator(moveout: Moveout, deviceId: string, accountId?: string): boolean {
+  return matchesOwner(moveout.creator_account_id, moveout.creator_device_id, deviceId, accountId);
+}
+
+// Same account-replaces-device rule as isCreator, for "is this requester the
 // claimant on this specific application" — the other half of every
-// creator/claimant pair in this app. A claimant who registers or signs in
-// on a second device can act on their own request from there exactly as if
-// it were the original device.
+// creator/claimant pair in this app.
 export function isClaimant(app: Application, deviceId: string, accountId?: string): boolean {
-  if (app.claimer_device_id === deviceId) return true;
-  return accountId !== undefined && app.claimer_account_id === accountId;
+  return matchesOwner(app.claimer_account_id, app.claimer_device_id, deviceId, accountId);
+}
+
+// Whether the CURRENT requester (deviceId/accountId) is the same party that
+// made a given reschedule proposal — the reschedule routes' own "is this
+// mine" check, same account-replaces-device rule, extracted here so
+// src/routes/reschedule.ts doesn't keep its own divergent copy of this logic
+// (it used to, and the two were a correctness risk waiting to drift apart).
+export function isProposer(proposal: RescheduleProposal, deviceId: string, accountId?: string): boolean {
+  return matchesOwner(proposal.proposed_by_account_id, proposal.proposed_by_device_id, deviceId, accountId);
+}
+
+// Whether two STORED identities (not "the current requester vs a stored
+// row" — two historical actors, e.g. "who proposed this" vs "who created
+// the page") refer to the same party, under the same account-replaces-
+// device rule. Needed because once either side is account-bound, comparing
+// their device ids directly is meaningless — only matching accounts (or,
+// when both are still unbound, matching devices) counts as "the same
+// person."
+function sameOwner(aDeviceId: string, aAccountId: string | null, bDeviceId: string, bAccountId: string | null): boolean {
+  if (aAccountId !== null || bAccountId !== null) return aAccountId !== null && bAccountId !== null && aAccountId === bAccountId;
+  return aDeviceId === bDeviceId;
+}
+
+// A SQL fragment implementing the same account-replaces-device rule as
+// matchesOwner, for queries that can't call a JS predicate per row (e.g.
+// "every application the current requester may see on this move-out page").
+// `prefix` is the table alias (e.g. "a" for applications), matching that
+// alias's `claimer_device_id`/`claimer_account_id` (or
+// `creator_device_id`/`creator_account_id`) columns. Returns the WHERE
+// fragment and its three bound params, in order.
+export function ownerMatchSql(prefix: string, kind: "claimer" | "creator"): { sql: string; bind: (deviceId: string, accountId: string | null) => [string, string | null, string | null] } {
+  const deviceCol = `${prefix}.${kind}_device_id`;
+  const accountCol = `${prefix}.${kind}_account_id`;
+  return {
+    // Unbound (accountCol IS NULL): device must match.
+    // Bound (accountCol IS NOT NULL): the requester's account must match it
+    // — device is never consulted once bound, by design (see matchesOwner).
+    sql: `((${accountCol} IS NULL AND ${deviceCol} = ?) OR (${accountCol} IS NOT NULL AND ? IS NOT NULL AND ${accountCol} = ?))`,
+    bind: (deviceId, accountId) => [deviceId, accountId, accountId],
+  };
 }
 
 export function getItem(id: string): Item | undefined {
@@ -78,7 +132,18 @@ export function pendingRescheduleView(applicationId: string, moveout: Moveout): 
     | import("./db.ts").Timeslot
     | undefined;
   if (!newTimeslot) return undefined;
-  return { proposal, newTimeslot, proposedByCreator: proposal.proposed_by_device_id === moveout.creator_device_id };
+  // Display only ("who proposed this"), but still has to use the same
+  // account-replaces-device rule as every authorization check — otherwise,
+  // once the page is account-bound, a creator proposing from their account
+  // would be mislabelled as "not the creator" here even though they ARE the
+  // authorized creator everywhere else.
+  const proposedByCreator = sameOwner(
+    proposal.proposed_by_device_id,
+    proposal.proposed_by_account_id,
+    moveout.creator_device_id,
+    moveout.creator_account_id,
+  );
+  return { proposal, newTimeslot, proposedByCreator };
 }
 
 export function listApplicationsForDevice(deviceId: string): Application[] {

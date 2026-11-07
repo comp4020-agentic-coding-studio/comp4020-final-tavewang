@@ -55,6 +55,19 @@ app.get("/readme/", (c) => {
 </html>`);
 });
 
+// Every HTML page in this app can render account-scoped state (the nav's
+// signed-in email, "Your requests", the exact pickup address, the manage
+// dashboard) — `private, no-store` on all of them is what stops a shared or
+// public computer's browser cache (or an intermediate proxy) from serving a
+// previous visitor's page to the next person who hits back/forward on that
+// machine after a logout. Static assets (styles.css, live.js, /uploads/:name)
+// are registered above this line and keep their own (default) caching —
+// none of them vary by who's asking.
+app.use("*", async (c, next) => {
+  await next();
+  c.header("Cache-Control", "private, no-store");
+});
+
 app.route("/", browseRoutes);
 app.route("/", homeRoutes);
 app.route("/", moveoutRoutes);

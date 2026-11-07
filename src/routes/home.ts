@@ -44,6 +44,15 @@ homeRoutes.get("/mine", (c) => {
 homeRoutes.post("/moveouts", async (c) => {
   const deviceId = c.get("deviceId");
   const account = c.get("account");
+  // Creating a page requires an account (this round's brief) — enforced
+  // here on the server, not just by hiding the form in mineView, since a
+  // hidden form is not a security boundary. A GET-redirect to login (not a
+  // 403) is deliberate: an unauthenticated visitor should be offered the
+  // chance to sign in and come straight back, not just rejected.
+  if (!account) {
+    logEvent({ event: "moveout.create", actor: deviceId, outcome: "denied", status: 401, reasonCode: "not_signed_in" });
+    return c.redirect(`/login?next=${encodeURIComponent("/mine")}&reason=signin_required`);
+  }
   const form = await c.req.formData();
   const title = String(form.get("title") ?? "").trim();
   const area = String(form.get("area") ?? "").trim();

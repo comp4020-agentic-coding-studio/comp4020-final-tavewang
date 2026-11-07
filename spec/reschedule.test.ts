@@ -71,7 +71,7 @@ it("the proposer can't accept their own proposal, and an unrelated stranger is r
   expect((await claimant.post(`/reschedule/${proposalId}/accept`)).status).toBe(403);
 
   // A third party has no standing on this reschedule at all.
-  const stranger = makeClient(baseUrl);
+  const stranger = await makeClient(baseUrl);
   expect((await stranger.post(`/reschedule/${proposalId}/accept`)).status).toBe(404);
   expect((await stranger.post(`/reschedule/${proposalId}/decline`)).status).toBe(404);
   expect((await stranger.post(`/reschedule/${proposalId}/withdraw`)).status).toBe(404);
@@ -134,7 +134,7 @@ it("rejects a new timeslot from a different move-out page, and the current times
   expect((await claimant.post(`/applications/${applicationId}/reschedule`, { newTimeslotId: slot1Id, reason: "" })).status).toBe(400);
 
   // A timeslot belonging to a totally different, unrelated move-out page.
-  const otherOwner = makeClient(baseUrl);
+  const otherOwner = await makeClient(baseUrl);
   const otherMoveoutRes = await otherOwner.post("/moveouts", {
     title: "Unrelated page",
     area: "Elsewhere",
@@ -156,7 +156,7 @@ it("rejects a new timeslot from a different move-out page, and the current times
   otherItemForm.set("name", "Unrelated item");
   otherItemForm.set("category", "Other");
   await otherOwner.post(`/m/${otherMoveoutId}/items`, otherItemForm);
-  const otherPublicPage = await (await makeClient(baseUrl).get(`/m/${otherMoveoutId}`)).text();
+  const otherPublicPage = await (await (await makeClient(baseUrl)).get(`/m/${otherMoveoutId}`)).text();
   const otherSlotIdMatch = otherPublicPage.match(/<option value="([A-Za-z0-9_-]+)">/);
   expect(otherSlotIdMatch).not.toBeNull();
   const foreignSlotId = otherSlotIdMatch![1];
@@ -165,7 +165,7 @@ it("rejects a new timeslot from a different move-out page, and the current times
 });
 
 it("rejects a new timeslot whose end time is after the move-out's deadline", async () => {
-  const owner = makeClient(baseUrl);
+  const owner = await makeClient(baseUrl);
   const moveoutRes = await owner.post("/moveouts", {
     title: "Deadline-overrun guard",
     area: "Test Hall",
@@ -184,7 +184,7 @@ it("rejects a new timeslot whose end time is after the move-out's deadline", asy
   itemForm.set("category", "Other");
   await owner.post(`/m/${moveoutId}/items`, itemForm);
 
-  const claimant = makeClient(baseUrl);
+  const claimant = await makeClient(baseUrl);
   const publicPage = await (await claimant.get(`/m/${moveoutId}`)).text();
   const itemId = publicPage.match(/data-item-id="([A-Za-z0-9_-]+)"/)![1];
   const slotId = publicPage.match(/<option value="([A-Za-z0-9_-]+)">/)![1];
@@ -229,7 +229,7 @@ it("rejects a new timeslot whose end time is after the move-out's deadline", asy
 });
 
 it("only a confirmed application can be rescheduled — a still-pending one is rejected", async () => {
-  const owner = makeClient(baseUrl);
+  const owner = await makeClient(baseUrl);
   const moveout = await owner.post("/moveouts", {
     title: "Pending-reschedule guard",
     area: "Test Hall",
@@ -248,7 +248,7 @@ it("only a confirmed application can be rescheduled — a still-pending one is r
   itemForm.set("category", "Other");
   await owner.post(`/m/${moveoutId}/items`, itemForm);
 
-  const claimant = makeClient(baseUrl);
+  const claimant = await makeClient(baseUrl);
   const publicPage = await (await claimant.get(`/m/${moveoutId}`)).text();
   const slotIds = Array.from(publicPage.matchAll(/<option value="([A-Za-z0-9_-]+)">/g)).map((m) => m[1]);
   await claimant.post(`/m/${moveoutId}/apply`, { itemId: publicPage.match(/data-item-id="([A-Za-z0-9_-]+)"/)![1], timeslotId: slotIds[0], nickname: "Claimant" });
@@ -318,7 +318,7 @@ it("accepting a reschedule resets departure status to not_departed", async () =>
 it("departure status can only be set by the claimant, only on a confirmed booking, and the claimant may move freely between values", async () => {
   const { owner, claimant, applicationId } = await setUpConfirmedBooking(baseUrl, { title: "Departure permission test" });
 
-  const stranger = makeClient(baseUrl);
+  const stranger = await makeClient(baseUrl);
   expect((await stranger.post(`/applications/${applicationId}/departure`, { status: "departed" })).status).toBe(404);
   expect((await owner.post(`/applications/${applicationId}/departure`, { status: "departed" })).status).toBe(404);
 
@@ -337,8 +337,8 @@ it("cancelling or completing a booking blocks any further departure-status chang
 });
 
 it("a proposed time that has since passed can no longer be accepted, and a fresh valid proposal is still allowed afterward", { timeout: 90_000 }, async () => {
-  const owner = makeClient(baseUrl);
-  const claimant = makeClient(baseUrl);
+  const owner = await makeClient(baseUrl);
+  const claimant = await makeClient(baseUrl);
   const moveoutRes = await owner.post("/moveouts", {
     title: "Expired-proposal guard",
     area: "Test Hall",
@@ -410,7 +410,7 @@ it("a proposed time that has since passed can no longer be accepted, and a fresh
 });
 
 it("the new feature never exposes the exact pickup location before confirmation, and one item still has at most one confirmed recipient", async () => {
-  const owner = makeClient(baseUrl);
+  const owner = await makeClient(baseUrl);
   const moveout = await owner.post("/moveouts", {
     title: "Privacy still holds",
     area: "Test Hall",
@@ -428,8 +428,8 @@ it("the new feature never exposes the exact pickup location before confirmation,
   itemForm.set("category", "Other");
   await owner.post(`/m/${moveoutId}/items`, itemForm);
 
-  const bob = makeClient(baseUrl);
-  const carol = makeClient(baseUrl);
+  const bob = await makeClient(baseUrl);
+  const carol = await makeClient(baseUrl);
   const publicPage = await (await bob.get(`/m/${moveoutId}`)).text();
   const itemId = publicPage.match(/data-item-id="([A-Za-z0-9_-]+)"/)![1];
   const slotId = publicPage.match(/<option value="([A-Za-z0-9_-]+)">/)![1];
@@ -467,7 +467,7 @@ it("the new feature never exposes the exact pickup location before confirmation,
 // confirmation that the fixed version shows the plain-language explanation
 // instead, on both the claimant's and the creator's page.
 it("shows no reschedule form (and no empty dropdown) when the only timeslot on the page is the one already confirmed", async () => {
-  const owner = makeClient(baseUrl);
+  const owner = await makeClient(baseUrl);
   const moveoutRes = await owner.post("/moveouts", {
     title: "Single-timeslot-only reschedule guard",
     area: "Test Hall",
@@ -486,7 +486,7 @@ it("shows no reschedule form (and no empty dropdown) when the only timeslot on t
   itemForm.set("category", "Other");
   await owner.post(`/m/${moveoutId}/items`, itemForm);
 
-  const claimant = makeClient(baseUrl);
+  const claimant = await makeClient(baseUrl);
   const publicPage = await (await claimant.get(`/m/${moveoutId}`)).text();
   const itemId = publicPage.match(/data-item-id="([A-Za-z0-9_-]+)"/)![1];
   const slotId = publicPage.match(/<option value="([A-Za-z0-9_-]+)">/)![1];
