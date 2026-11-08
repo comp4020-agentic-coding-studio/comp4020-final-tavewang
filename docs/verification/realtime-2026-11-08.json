@@ -1,0 +1,588 @@
+{
+  "dateSydney": "2026-11-08",
+  "startedAt": "2026-11-07T13:26:23.376Z",
+  "readyAt": "2026-11-07T13:26:41.270Z",
+  "site": "https://comp4020-final-tavewang.fly.dev",
+  "commit": "8beecd3d495d289ee51c642fff7cc29dd1dc0ded",
+  "browserVersion": "156.0.8078.81",
+  "method": {
+    "actors": "Independent Chrome contexts on the same host; creator and claimant use 1920x1080 and 390x844, then exchange viewport roles. A third context observes the same owner account on another device.",
+    "start": "Capture-phase browser submit event, timestamped with performance.timeOrigin + performance.now().",
+    "end": "MutationObserver detects expected CSS-visible recipient DOM, then two requestAnimationFrame callbacks provide a paint opportunity. This is a rendered-DOM proxy, not a physical display sensor.",
+    "sampling": "Three repetitions per operation in each viewport direction; 36 samples in the complete run. Every receiver remained on its page with zero navigations.",
+    "conditions": "Normal current connection, warm application, headless installed Chrome. No network throttling or load stress.",
+    "selfcheck": "Synthetic 120 ms delay measured at 143 ms; already-satisfied conditions are rejected.",
+    "abortedRuns": "Earlier harness runs stopped on a registration confirmation-page navigation assumption and a scroll/DOM-replacement race. Their incomplete samples are excluded; no application code was changed."
+  },
+  "summary": {
+    "n": 36,
+    "minMs": 62,
+    "medianMs": 77.0,
+    "p95NearestRankMs": 161,
+    "maxMs": 162,
+    "within1000ms": 36,
+    "receiverReloads": 0
+  },
+  "operations": {
+    "cross-device page": {
+      "n": 6,
+      "minMs": 64,
+      "medianMs": 64.5,
+      "maxMs": 157
+    },
+    "apply": {
+      "n": 6,
+      "minMs": 64,
+      "medianMs": 68.0,
+      "maxMs": 150
+    },
+    "confirm": {
+      "n": 6,
+      "minMs": 75,
+      "medianMs": 87.5,
+      "maxMs": 162
+    },
+    "departure": {
+      "n": 6,
+      "minMs": 67,
+      "medianMs": 75.0,
+      "maxMs": 135
+    },
+    "propose": {
+      "n": 6,
+      "minMs": 62,
+      "medianMs": 77.0,
+      "maxMs": 110
+    },
+    "accept": {
+      "n": 6,
+      "minMs": 66,
+      "medianMs": 76.5,
+      "maxMs": 102
+    }
+  },
+  "samples": [
+    {
+      "label": "cross-device page 0/0",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 64,
+      "domMs": 52,
+      "receiverReloads": 0
+    },
+    {
+      "label": "cross-device page 0/1",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 64,
+      "domMs": 55,
+      "receiverReloads": 0
+    },
+    {
+      "label": "cross-device page 0/2",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 130,
+      "domMs": 125,
+      "receiverReloads": 0
+    },
+    {
+      "label": "apply 0/0",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 64,
+      "domMs": 44,
+      "receiverReloads": 0
+    },
+    {
+      "label": "confirm 0/0",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 162,
+      "domMs": 134,
+      "receiverReloads": 0
+    },
+    {
+      "label": "departure 0/0",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 84,
+      "domMs": 52,
+      "receiverReloads": 0
+    },
+    {
+      "label": "propose 0/0",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 78,
+      "domMs": 53,
+      "receiverReloads": 0
+    },
+    {
+      "label": "accept 0/0",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 66,
+      "domMs": 43,
+      "receiverReloads": 0
+    },
+    {
+      "label": "apply 0/1",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 150,
+      "domMs": 125,
+      "receiverReloads": 0
+    },
+    {
+      "label": "confirm 0/1",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 96,
+      "domMs": 75,
+      "receiverReloads": 0
+    },
+    {
+      "label": "departure 0/1",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 67,
+      "domMs": 51,
+      "receiverReloads": 0
+    },
+    {
+      "label": "propose 0/1",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 76,
+      "domMs": 49,
+      "receiverReloads": 0
+    },
+    {
+      "label": "accept 0/1",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 84,
+      "domMs": 55,
+      "receiverReloads": 0
+    },
+    {
+      "label": "apply 0/2",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 82,
+      "domMs": 59,
+      "receiverReloads": 0
+    },
+    {
+      "label": "confirm 0/2",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 79,
+      "domMs": 52,
+      "receiverReloads": 0
+    },
+    {
+      "label": "departure 0/2",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 82,
+      "domMs": 66,
+      "receiverReloads": 0
+    },
+    {
+      "label": "propose 0/2",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 62,
+      "domMs": 43,
+      "receiverReloads": 0
+    },
+    {
+      "label": "accept 0/2",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 84,
+      "domMs": 63,
+      "receiverReloads": 0
+    },
+    {
+      "label": "cross-device page 1/0",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 157,
+      "domMs": 141,
+      "receiverReloads": 0
+    },
+    {
+      "label": "cross-device page 1/1",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 65,
+      "domMs": 53,
+      "receiverReloads": 0
+    },
+    {
+      "label": "cross-device page 1/2",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 64,
+      "domMs": 62,
+      "receiverReloads": 0
+    },
+    {
+      "label": "apply 1/0",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 68,
+      "domMs": 41,
+      "receiverReloads": 0
+    },
+    {
+      "label": "confirm 1/0",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 161,
+      "domMs": 131,
+      "receiverReloads": 0
+    },
+    {
+      "label": "departure 1/0",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 68,
+      "domMs": 40,
+      "receiverReloads": 0
+    },
+    {
+      "label": "propose 1/0",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 77,
+      "domMs": 45,
+      "receiverReloads": 0
+    },
+    {
+      "label": "accept 1/0",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 102,
+      "domMs": 85,
+      "receiverReloads": 0
+    },
+    {
+      "label": "apply 1/1",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 68,
+      "domMs": 38,
+      "receiverReloads": 0
+    },
+    {
+      "label": "confirm 1/1",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 75,
+      "domMs": 46,
+      "receiverReloads": 0
+    },
+    {
+      "label": "departure 1/1",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 68,
+      "domMs": 44,
+      "receiverReloads": 0
+    },
+    {
+      "label": "propose 1/1",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 110,
+      "domMs": 85,
+      "receiverReloads": 0
+    },
+    {
+      "label": "accept 1/1",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 69,
+      "domMs": 48,
+      "receiverReloads": 0
+    },
+    {
+      "label": "apply 1/2",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 67,
+      "domMs": 49,
+      "receiverReloads": 0
+    },
+    {
+      "label": "confirm 1/2",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 78,
+      "domMs": 49,
+      "receiverReloads": 0
+    },
+    {
+      "label": "departure 1/2",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 135,
+      "domMs": 115,
+      "receiverReloads": 0
+    },
+    {
+      "label": "propose 1/2",
+      "actorViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "receiverViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "ms": 77,
+      "domMs": 46,
+      "receiverReloads": 0
+    },
+    {
+      "label": "accept 1/2",
+      "actorViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "receiverViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "ms": 69,
+      "domMs": 39,
+      "receiverReloads": 0
+    }
+  ],
+  "overnightBaseline": {
+    "status": "prepared, not yet verified on a later day",
+    "accounts": 4,
+    "unlistedPages": 6,
+    "items": 6,
+    "confirmedApplications": 6,
+    "uploadedPngFiles": 2,
+    "pendingReschedules": 2,
+    "privacy": "Credentials, session cookies, page IDs and baseline screenshots are stored only under gitignored data/ with private directory permissions. Formal fixtures were confirmed absent from anonymous Browse search.",
+    "followupSydney": "2026-11-09 09:00",
+    "followupPlan": [
+      "Compare original sessions, all arrangement fields and photo SHA-256 hashes",
+      "Log in from fresh contexts and recover owner pages and claimant requests",
+      "Accept each saved reschedule with the original claimant session to verify write authorization",
+      "Recheck Unlisted visibility and anonymous access restrictions"
+    ],
+    "limits": "Cross-day return does not itself prove a production process restart. No production restart will be forced."
+  }
+}
