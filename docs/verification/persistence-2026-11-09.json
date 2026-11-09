@@ -1,0 +1,56 @@
+{
+  "dateSydney": "2026-11-09",
+  "checkedAt": "2026-11-08T22:00:52.638Z",
+  "baselineAt": "2026-11-07T13:26:41.270Z",
+  "elapsedHours": 32.57,
+  "site": "https://comp4020-final-tavewang.fly.dev",
+  "localCommit": "4e0d859afe85aaa84606e548aba94d69ee7af468",
+  "baselineRecord": "realtime-2026-11-08.json",
+  "script": "../../scripts/production-acceptance.mjs",
+  "result": "passed",
+  "checkGroupsPassed": 8,
+  "checkGroupsExpected": 8,
+  "coverage": {
+    "accounts": 4,
+    "unlistedPagesRecovered": 6,
+    "confirmedApplicationsCompared": 6,
+    "uploadedPngFilesComparedBySha256": 2,
+    "originalOwnerSessionsUsed": 2,
+    "originalClaimantSessionsUsedForWrite": 2,
+    "freshBrowserAccountLogins": 4,
+    "overnightRescheduleProposalsAccepted": 2
+  },
+  "checks": [
+    {
+      "fixtureGroup": 1,
+      "result": "passed",
+      "details": [
+        "Original owner session opens management; all three saved arrangement facts match their baseline before the follow-up writes.",
+        "Uploaded PNG is readable and its SHA-256 matches the original bytes.",
+        "Fresh independent logins recover all three owner pages and all three claimant requests.",
+        "Original claimant session accepts the retained pending reschedule; the owner sees the confirmed time change.",
+        "The primary page is Unlisted and all three group pages remain absent from anonymous Browse search.",
+        "Anonymous management access returns HTTP 403; public view does not disclose the exact pickup location."
+      ]
+    },
+    {
+      "fixtureGroup": 2,
+      "result": "passed",
+      "details": [
+        "Original owner session opens management; all three saved arrangement facts match their baseline before the follow-up writes.",
+        "Uploaded PNG is readable and its SHA-256 matches the original bytes.",
+        "Fresh independent logins recover all three owner pages and all three claimant requests.",
+        "Original claimant session accepts the retained pending reschedule; the owner sees the confirmed time change.",
+        "The primary page is Unlisted and all three group pages remain absent from anonymous Browse search.",
+        "Anonymous management access returns HTTP 403; public view does not disclose the exact pickup location."
+      ]
+    }
+  ],
+  "dataChanges": "The two retained QA reschedule proposals were accepted as authorised. No real user records were changed or deleted; no new fixtures were created.",
+  "limits": [
+    "This verifies the designated QA records after a cross-day interval, not the entire production database.",
+    "The check neither forced nor independently observed a production process restart. A successful cross-day return is not itself evidence of an actual restart.",
+    "This is automated browser verification, not a human usability trial."
+  ],
+  "privacy": "Credentials, cookies, direct fixture URLs and baseline screenshots remain only in gitignored private local storage."
+}
